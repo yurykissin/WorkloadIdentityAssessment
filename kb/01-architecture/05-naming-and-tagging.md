@@ -87,8 +87,8 @@ Apply these tags to every `Microsoft.ManagedIdentity/userAssignedIdentities` ARM
 
 | Tag Name          | Required | Description                                                        | Example values                          |
 |-------------------|----------|--------------------------------------------------------------------|-----------------------------------------|
-| `Owner`           | Yes      | Email address or alias of the primary accountable owner.           | `team-platform@<customer>.com`          |
-| `SecondaryOwner`  | Yes      | Email address of the secondary owner.                              | `eng-lead@<customer>.com`               |
+| `Owner`           | Yes      | Email address or alias of the primary accountable owner.           | `team-platform@<organization>.com`          |
+| `SecondaryOwner`  | Yes      | Email address of the secondary owner.                              | `eng-lead@<organization>.com`               |
 | `CostCenter`      | Yes      | Cost centre code for chargeback.                                   | `CC-1234`                               |
 | `Environment`     | Yes      | Deployment environment.                                            | `prod`, `nprod`, `dev`                  |
 | `DataSensitivity` | Yes      | Highest sensitivity of data the workload accesses.                 | `public`, `internal`, `confidential`, `restricted` |
@@ -109,7 +109,7 @@ PATCH https://graph.microsoft.com/v1.0/applications/<object-id>
 Content-Type: application/json
 
 {
-  "tags": ["Owner:team-platform@<customer>.com", "Environment:prod", "AppCode:APP-0042"]
+  "tags": ["Owner:team-platform@<organization>.com", "Environment:prod", "AppCode:APP-0042"]
 }
 ```
 
@@ -117,7 +117,7 @@ Content-Type: application/json
 
 **Convention:** Use `Key:Value` format as a string to maintain queryability:
 ```
-"Owner:team-platform@<customer>.com"
+"Owner:team-platform@<organization>.com"
 "Environment:prod"
 "DataSensitivity:confidential"
 "AppCode:APP-0042"
@@ -166,7 +166,7 @@ Before deploying any workload identity, validate the following naming and taggin
 
 ## Approved Business Unit Abbreviations
 
-Update this table to match `<customer>`'s organisational structure before using in naming.
+Update this table to match `<organization>`'s organisational structure before using in naming.
 
 | BU Abbreviation | Business Unit Name          |
 |-----------------|-----------------------------|

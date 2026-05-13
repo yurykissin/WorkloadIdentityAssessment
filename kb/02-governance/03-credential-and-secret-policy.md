@@ -48,7 +48,7 @@ The following JSON illustrates an `appManagementPolicy` object posted to Microso
 POST https://graph.microsoft.com/v1.0/policies/appManagementPolicies
 
 {
-  "displayName": "<customer>-workload-identity-default-policy",
+  "displayName": "<organization>-workload-identity-default-policy",
   "description": "Tenant default credential policy. Disables password credentials; caps certificate lifetime at 730 days.",
   "isEnabled": true,
   "restrictions": {

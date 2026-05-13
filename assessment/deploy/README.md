@@ -75,7 +75,7 @@ Privileged Role Administrator). Two ways:
 ### Option A — Cloud Shell PowerShell (recommended, ~30 seconds)
 
 ```powershell
-# 1. Download the helper from the consultant's repo
+# 1. Download the helper from the assessor's repo
 $url = 'https://raw.githubusercontent.com/yurykissin_microsoft/WorkloadIdentity/main/assessment/deploy/grant-graph-permissions.ps1'
 Invoke-WebRequest $url -OutFile grant-graph-permissions.ps1
 
@@ -145,7 +145,7 @@ done
 [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FCHANGE-ME%2FCHANGE-ME%2Fmain%2Fassessment%2Fdeploy%2Fazuredeploy.json)
 
 > The repo path `yurykissin_microsoft/WorkloadIdentity` in the URL above must be replaced with
-> the public GitHub repo your consultant published the templates to.
+> the public GitHub repo your assessor published the templates to.
 
 Fill in the form:
 
@@ -155,7 +155,7 @@ Fill in the form:
 | `uamiResourceId`   | from step 1 |
 | `uamiClientId`     | from step 1 |
 | `namePrefix`       | `wia` (default — controls the storage account name) |
-| `artifactsBaseUrl` | as provided by your consultant (must end with `/`) |
+| `artifactsBaseUrl` | as provided by your assessor (must end with `/`) |
 
 Click **Create**. The template:
 
@@ -182,7 +182,7 @@ You'll see:
 * `expiresAt`  — UTC timestamp when the SAS URLs expire (default 7 days)
 * `storageAccountName` — the storage account that holds the blobs
 
-Forward `reportUrl` to your consultant if you want them to debrief you.
+Forward `reportUrl` to your assessor if you want them to debrief you.
 
 ---
 

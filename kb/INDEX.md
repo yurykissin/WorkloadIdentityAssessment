@@ -1,53 +1,9 @@
-# KB INDEX — fast lookup table for call mode
+# KB INDEX — fast lookup table
 
-Single grep this file. Each row points to a heading in a KB article.
+Single grep this file for any heading across the KB. Each row points to a heading in a KB article.
 Format: `H<level> · <article-path>:<line> · <heading text>`
 
 _Auto-generated. Re-run `scripts/build-index.py` after editing KB._
-
-## 00-call-prep
-
-| Lvl | Heading | Path:Line |
-|-----|---------|-----------|
-| H1 | Discovery Questions — Workload & Managed Identity | `kb/00-call-prep/01-discovery-questions.md:1` |
-| H2 | Current State | `kb/00-call-prep/01-discovery-questions.md:7` |
-| H2 | Workload Inventory | `kb/00-call-prep/01-discovery-questions.md:22` |
-| H2 | Sensitivity & Risk | `kb/00-call-prep/01-discovery-questions.md:41` |
-| H2 | Lifecycle & Ownership | `kb/00-call-prep/01-discovery-questions.md:55` |
-| H2 | Secrets Hygiene | `kb/00-call-prep/01-discovery-questions.md:70` |
-| H2 | Permission Hygiene | `kb/00-call-prep/01-discovery-questions.md:85` |
-| H2 | Monitoring & Detection | `kb/00-call-prep/01-discovery-questions.md:101` |
-| H2 | Tooling & Automation | `kb/00-call-prep/01-discovery-questions.md:117` |
-| H2 | Compliance & Regulatory | `kb/00-call-prep/01-discovery-questions.md:131` |
-| H2 | Future State Goals | `kb/00-call-prep/01-discovery-questions.md:143` |
-| H2 | References | `kb/00-call-prep/01-discovery-questions.md:156` |
-| H1 | Decision Log Template — Workload Identity Engagement | `kb/00-call-prep/02-decision-log-template.md:1` |
-| H2 | Engagement Metadata | `kb/00-call-prep/02-decision-log-template.md:7` |
-| H2 | Scope Decisions | `kb/00-call-prep/02-decision-log-template.md:24` |
-| H3 | In Scope | `kb/00-call-prep/02-decision-log-template.md:26` |
-| H3 | Out of Scope | `kb/00-call-prep/02-decision-log-template.md:37` |
-| H2 | Architecture Decisions | `kb/00-call-prep/02-decision-log-template.md:45` |
-| H2 | Governance Decisions | `kb/00-call-prep/02-decision-log-template.md:58` |
-| H2 | Management Decisions | `kb/00-call-prep/02-decision-log-template.md:73` |
-| H2 | Open Questions / Parking Lot | `kb/00-call-prep/02-decision-log-template.md:88` |
-| H2 | Action Items | `kb/00-call-prep/02-decision-log-template.md:98` |
-| H2 | Risks Accepted / Exceptions Granted | `kb/00-call-prep/02-decision-log-template.md:110` |
-| H2 | Notes | `kb/00-call-prep/02-decision-log-template.md:118` |
-| H2 | References | `kb/00-call-prep/02-decision-log-template.md:124` |
-| H1 | Talking Points — Workload & Managed Identity | `kb/00-call-prep/03-talking-points.md:1` |
-| H2 | Opening Framing (~3 paragraphs, read or paraphrase) | `kb/00-call-prep/03-talking-points.md:7` |
-| H2 | Key Messages to Land | `kb/00-call-prep/03-talking-points.md:17` |
-| H3 | 1. The Credential Preference Hierarchy | `kb/00-call-prep/03-talking-points.md:19` |
-| H3 | 2. Why Workload Identity Governance Matters | `kb/00-call-prep/03-talking-points.md:30` |
-| H3 | 3. Governance Is What Makes It Last | `kb/00-call-prep/03-talking-points.md:37` |
-| H3 | 4. Licensing Checkpoint | `kb/00-call-prep/03-talking-points.md:43` |
-| H2 | Anti-Patterns to Surface Diplomatically | `kb/00-call-prep/03-talking-points.md:53` |
-| H2 | Common Objections & How to Handle Them | `kb/00-call-prep/03-talking-points.md:72` |
-| H2 | Questions to Listen For During Discovery | `kb/00-call-prep/03-talking-points.md:93` |
-| H2 | Call Close — What We Want to Walk Away With | `kb/00-call-prep/03-talking-points.md:112` |
-| H2 | Engagement Maturity Ladder | `kb/00-call-prep/03-talking-points.md:124` |
-| H2 | Call Preparation Checklist | `kb/00-call-prep/03-talking-points.md:138` |
-| H2 | References | `kb/00-call-prep/03-talking-points.md:152` |
 
 ## 01-architecture
 

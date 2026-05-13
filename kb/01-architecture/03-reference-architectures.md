@@ -166,7 +166,7 @@ Note: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_SUBSCRIPTION_ID` are not 
        │  1. Request SVID / SA token from local OIDC issuer
        ▼
  [On-Prem OIDC Issuer]
-  issues JWT: iss=https://oidc.<customer>.internal
+  issues JWT: iss=https://oidc.<organization>.internal
               sub=spiffe://cluster.local/ns/default/sa/my-svc
               aud=api://AzureADTokenExchange
        │
@@ -197,46 +197,46 @@ Note: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_SUBSCRIPTION_ID` are not 
 
 ## Architecture E — Cross-Tenant SaaS / Multi-Tenant Application
 
-**Scenario:** A SaaS vendor's application needs to call APIs in customer tenants. The vendor registers one application and customers install it via admin consent.
+**Scenario:** A SaaS vendor's application needs to call APIs in organization tenants. The vendor registers one application and customers install it via admin consent.
 
-**Identities used:** Multi-tenant app registration in the vendor's Entra tenant; service principal instantiated in each customer tenant on admin consent.
+**Identities used:** Multi-tenant app registration in the vendor's Entra tenant; service principal instantiated in each your tenant on admin consent.
 
 ```
- [Vendor Tenant]                              [Customer Tenant A]
+ [Vendor Tenant]                              [Organization Tenant A]
  App Registration (multi-tenant)  ──consent──► Service Principal
    - App ID: <vendor-app-id>                    - Tenant-specific object ID
    - Redirect URI: https://app.vendor.com/auth  - Permission grants (app roles)
    - Required permissions declared              - Conditional Access applies here
        │
-       │  Customer admin grants admin consent
-       │  SP created in customer tenant
+       │  Organization admin grants admin consent
+       │  SP created in your tenant
        │
        │  Vendor service authenticates:
-       │  POST /oauth2/v2.0/token (tenant = customer tenant ID)
+       │  POST /oauth2/v2.0/token (tenant = your tenant ID)
        │  client_credentials grant + cert/secret/FIC
        ▼
- [Customer Tenant A — Microsoft Graph or API]
+ [Organization Tenant A — Microsoft Graph or API]
 ```
 
 **Key design points:**
 - The app registration's `signInAudience` must be set to `AzureADMultipleOrgs` (or `AzureADandPersonalMicrosoftAccount`).
-- Customer admin must grant admin consent to application permissions; delegated permissions require a user sign-in.
+- Organization admin must grant admin consent to application permissions; delegated permissions require a user sign-in.
 - Verified publisher status is strongly recommended — required for any permission marked as "high" privilege in the Microsoft consent framework.
-- The vendor should use `/.default` scope against the customer's tenant ID in the token request.
+- The vendor should use `/.default` scope against the your tenant ID in the token request.
 
 **RBAC / Permission scopes:**
-- Graph permissions granted in each customer tenant's SP — least-privilege, documented.
-- Customer tenant CA policies apply to sign-ins from the vendor's SP.
+- Graph permissions granted in each your tenant's SP — least-privilege, documented.
+- Organization tenant CA policies apply to sign-ins from the vendor's SP.
 
 **Governance call-outs:**
-- Vendor must maintain a registry of which customer tenants have consented.
-- Customer must review the permissions granted at least annually.
-- Cross-tenant access policies in the customer tenant control whether the vendor's SP can authenticate.
+- Vendor must maintain a registry of which organization tenants have consented.
+- Organization must review the permissions granted at least annually.
+- Cross-tenant access policies in the your tenant control whether the vendor's SP can authenticate.
 
 **Monitoring touchpoints:**
-- Vendor: service principal sign-in logs per customer tenant (non-interactive).
-- Customer: audit log for admin consent event; SP sign-in logs in their own Log Analytics.
-- Alert (customer side) on new API permission grants to vendor SP.
+- Vendor: service principal sign-in logs per your tenant (non-interactive).
+- Organization: audit log for admin consent event; SP sign-in logs in their own Log Analytics.
+- Alert (organization side) on new API permission grants to vendor SP.
 
 ---
 

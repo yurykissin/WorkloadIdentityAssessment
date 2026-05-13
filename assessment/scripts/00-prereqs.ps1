@@ -4,10 +4,10 @@
 
 .DESCRIPTION
     Checks PowerShell version, installs/updates required modules, and prints
-    the Graph delegated scopes and Azure roles the consultant must have before
+    the Graph delegated scopes and Azure roles the assessor must have before
     running assessment scripts 01–08.
 
-    Does NOT call Connect-MgGraph — the consultant runs that interactively to
+    Does NOT call Connect-MgGraph — the assessor runs that interactively to
     consent the correct scopes.
 
 .EXAMPLE

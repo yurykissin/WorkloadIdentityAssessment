@@ -1,52 +1,94 @@
-# WorkloadIdentity — customer engagement deliverable
+# WorkloadIdentity — documentation + self-assessment toolkit
 
-Time-bound project: customer call about defining/designing **workload &
-managed identity** end-to-end (architecture, governance, management).
+Reference documentation **and** a read-only assessment toolkit for **workload
+identities** in Microsoft Entra ID — application registrations, service
+principals, managed identities, and federated identity credentials (FICs).
 
-Format mirrors the consultant's previously-delivered customer report style
-(numbered sections, policy / required-value tables — see §§8.12–8.14 of the
-prior deliverable as the reference shape).
+The goal: give an organization (security team, platform engineering, identity
+team) everything needed to **document, govern, manage, and continuously
+assess** the workload identities living in its Entra tenant — without ever
+modifying tenant state.
+
+## What's in here
+
+| Area | Purpose |
+|------|---------|
+| [`kb/01-architecture/`](kb/01-architecture/) | Workload identity taxonomy (MI vs SP vs app reg vs federated WI), decision matrix for *which* identity type to use, reference architectures, trust model & token flow, naming + tagging guidance. |
+| [`kb/02-governance/`](kb/02-governance/) | Policy templates (required-value tables): app registration policy, workload identity policy, credential & secret policy, permission assignment policy, ownership & accountability, exception process. Drop-in for an internal IAM standard. |
+| [`kb/03-management/`](kb/03-management/) | Operational runbooks: lifecycle (create → retire), credential rotation, access reviews, monitoring & alerts, incident response, tooling (Graph / Bicep / PIM-for-Groups). |
+| [`kb/INDEX.md`](kb/INDEX.md) | Auto-generated heading index across the whole KB — single grep target. |
+| [`assessment/`](assessment/) | **Read-only** PowerShell toolkit + ARM-based one-click deploy that inventories the workload-identity surface in your tenant + subscriptions and produces a styled HTML report with prioritized findings. |
 
 ## How to use
 
-| Phase | Open this |
-|-------|-----------|
-| **Before the call** | `kb/00-call-prep/01-discovery-questions.md` — read questions to drive the conversation. `kb/00-call-prep/03-talking-points.md` — opening + key messages. **Pre-flight the assessment toolkit** — see `assessment/README.md` and run `assessment/scripts/run-all.ps1` so live data is ready when the customer joins. |
-| **During the call** | Follow `assessment/RUNBOOK.md` (90-min agenda). Walk evidence in `assessment/output/<ts>/` with the customer. Capture decisions live in `kb/00-call-prep/02-decision-log-template.md` and fill in `assessment/REPORT-TEMPLATE.md`. |
-| **After the call** | Hand the customer the populated report (`assessment/REPORT-TEMPLATE.md` filled in) plus the relevant `kb/01-architecture/`, `kb/02-governance/`, `kb/03-management/` articles as the design baseline. Backlog items map back to specific governance sections. |
+1. **Read the KB first** — `kb/01-architecture/` to align on terminology and
+   decide which identity type belongs where; `kb/02-governance/` to ratify a
+   policy baseline; `kb/03-management/` to set up operations.
+2. **Run the assessment** — produces evidence-based findings against your
+   actual tenant. Two ways:
+   - **Local:** `pwsh assessment/scripts/run-all.ps1` (after
+     `Connect-MgGraph` + `Connect-AzAccount`)
+   - **One-click in Azure:** ARM template + Deployment Script —
+     see [`assessment/deploy/`](assessment/deploy/) for the link and
+     prerequisites.
+3. **Walk the HTML report** with stakeholders. Map each finding back to the
+   relevant KB article (the report links to recommended sections).
+4. **Re-run periodically** — quarterly is a sensible cadence — to track
+   drift and demonstrate progress.
 
-## KB structure
+## Sample report
 
-| Section | Purpose |
-|---------|---------|
-| [`kb/00-call-prep/`](kb/00-call-prep/) | Discovery questions, decision log, talking points. Use day-of-call. |
-| [`kb/01-architecture/`](kb/01-architecture/) | Workload identity taxonomy (MI / SP / app reg / federated WI), decision matrix, reference architectures, trust model, naming. |
-| [`kb/02-governance/`](kb/02-governance/) | Policy / required-value tables: app reg, workload identity, credentials, permissions, ownership, exceptions. |
-| [`kb/03-management/`](kb/03-management/) | Operations: lifecycle, credential rotation, access reviews, monitoring, IR, tooling. |
-| [`assessment/`](assessment/) | **Read-only** PowerShell toolkit that walks the discovery questions in `kb/00-call-prep/01-discovery-questions.md` against the customer's actual tenant + subscriptions. Produces evidence files + a fillable report. Used in the working-session phase. |
+The `assessment/scripts/09-html-report.ps1` script consolidates the JSON
+output of all earlier scripts into a single self-contained HTML file with:
 
-## Federation
+- Tenant context tile + license capability matrix
+- 4-tier findings (HIGH / MED / LOW / INFO) with explicit recommendations
+- Drill-down tables for inventory, credentials, FICs, permissions, stale
+  identities, monitoring coverage, Conditional Access targeting
+- Raw JSON appendix per script run
 
-Layer 1 portal-walkthrough (field-by-field) content for app registrations
-already lives at
-`/Volumes/data/vscode/MyProjects/entra-nrt/kb/app-registrations/`.
-This project does NOT duplicate it — articles here link out via "See also"
-where a portal walkthrough is the right next read for the customer.
+> Screenshots below were rendered against synthetic data — no real tenant
+> identifiers are present in this repository.
 
-This project's `kb/INDEX.md` is registered with the federated search at
-`/Volumes/data/vscode/MyProjects/_nrt-search.sh`.
+### Header + navigation
+![Header](assessment/docs/screenshots/01-header-and-nav.png)
 
-## Conventions (this project)
+### Findings — high severity
+![High findings](assessment/docs/screenshots/02-findings-high.png)
 
-- Customer-facing tone: actionable, prescriptive.
-- Every governance article uses the policy/required-value table shape from
-  the prior §§8.12–8.14 deliverable.
-- Top of every article: portal path(s) (Entra admin center / Azure portal).
-- Bottom of every article: `## References` (1–3 learn.microsoft.com URLs).
-- No customer-specific data committed — templates only. Fill in
-  customer name, tenant ID, etc. in your own working copy or the
-  decision log.
+### Findings — medium / low / info
+![Med/low/info findings](assessment/docs/screenshots/03-findings-med-low-info.png)
 
-## Status
+### Tenant context (license capabilities, role member counts)
+![Tenant context](assessment/docs/screenshots/04-tenant-context.png)
 
-See [`PROGRESS.md`](PROGRESS.md).
+### Inventory (managed identities, app registrations, in-tenant SPs)
+![Inventory](assessment/docs/screenshots/05-inventory.png)
+
+### Credential hygiene + federated credentials
+![Credentials and FICs](assessment/docs/screenshots/06-credentials-fic.png)
+
+## Style of the KB content
+
+- Reference-document tone — actionable, prescriptive, table-heavy.
+- Each governance article ends with a **Required Value** table that can be
+  pasted directly into an internal IAM standard.
+- Each article ends with a `## References` section pointing to
+  `learn.microsoft.com`.
+
+## Out of scope
+
+- No Bicep / Terraform sample IaC for provisioning identities yet.
+- The assessment is **read-only**: it never grants permissions, modifies
+  policies, or rotates credentials. All remediation is left to humans
+  following the KB runbooks.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE) (add one if redistributing).
+
+## Contributing
+
+Issues and PRs welcome. Don't commit any tenant data — `assessment/output/`
+is `.gitignore`d for that reason. If you submit screenshots, sanitize them
+first.

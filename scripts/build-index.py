@@ -9,9 +9,9 @@ import os, re
 KB = os.path.join(os.path.dirname(__file__), "..", "kb")
 KB = os.path.abspath(KB)
 
-out = ["# KB INDEX — fast lookup table for call mode",
+out = ["# KB INDEX — fast lookup table",
        "",
-       "Single grep this file. Each row points to a heading in a KB article.",
+       "Single grep this file for any heading across the KB. Each row points to a heading in a KB article.",
        "Format: `H<level> · <article-path>:<line> · <heading text>`",
        "",
        "_Auto-generated. Re-run `scripts/build-index.py` after editing KB._",

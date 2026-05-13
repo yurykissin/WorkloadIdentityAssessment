@@ -44,9 +44,9 @@ Microsoft Entra admin center > Identity > Enterprise applications > Consent and 
 
 ## Scope and Applicability
 
-This policy applies to all app registrations created in `<customer>`'s Microsoft Entra tenant, including:
+This policy applies to all app registrations created in `<organization>`'s Microsoft Entra tenant, including:
 
-- App registrations owned by the customer's internal engineering teams.
+- App registrations owned by your organization's internal engineering teams.
 - App registrations registered by platform or cloud engineering for shared service SPs.
 - App registrations for SaaS or ISV applications that have been registered (not enterprise applications consented from a third-party publisher's tenant — those are covered by the service principal consent review process).
 
@@ -59,7 +59,7 @@ This policy does **not** cover:
 
 ## Tenant-Level Security Settings — Quick Reference
 
-These settings are set once and affect all app registrations in the tenant. Verify these are in the correct state before the customer call ends.
+These settings are set once and affect all app registrations in the tenant. Verify these are in the correct state before the assessment session ends.
 
 Path to verify:
 ```

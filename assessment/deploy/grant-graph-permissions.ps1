@@ -6,7 +6,7 @@
 
 .DESCRIPTION
     The assessment runs as a user-assigned managed identity inside the
-    customer tenant. That MI must be granted Microsoft Graph application
+    your tenant. That MI must be granted Microsoft Graph application
     permissions BEFORE the assessment deployment script is executed.
 
     Granting Graph app roles requires Application.ReadWrite.All or

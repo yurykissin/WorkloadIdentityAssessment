@@ -26,7 +26,7 @@ Start with the lookup table. If your scenario does not appear, use the tie-break
 | GitLab CI pipeline deploying to Azure                          | Federated credential on an app registration        | GitLab CI supports OIDC token injection; configure federated credential with GitLab's issuer URL.                     | Subject claim format: `project_path:<group>/<project>:ref_type:branch:ref:<branch-name>`.                   |
 | On-premises service calling Microsoft Graph                    | Federated credential via on-prem OIDC issuer       | If the on-prem environment runs an OIDC-capable issuer (e.g., Kubernetes, SPIFFE/SPIRE), no secret is needed.        | If no OIDC issuer available, use a certificate credential stored in an HSM or on-prem Key Vault equivalent. |
 | On-premises service calling Azure — no OIDC available          | Service principal + certificate credential         | Certificate is stronger than a secret; store private key in an HSM or on-prem Key Vault.                             | Plan migration to federated credential when the environment supports an OIDC issuer.                        |
-| Cross-tenant SaaS application calling customer tenant APIs     | Multi-tenant app registration + per-tenant SP + admin consent | SaaS model: one app reg in vendor tenant; SP instantiated in each customer tenant on admin consent. | Customer tenant admin must grant consent; document permissions requested. Verified publisher recommended.   |
+| Cross-tenant SaaS application calling organization tenant APIs     | Multi-tenant app registration + per-tenant SP + admin consent | SaaS model: one app reg in vendor tenant; SP instantiated in each your tenant on admin consent. | Organization tenant admin must grant consent; document permissions requested. Verified publisher recommended.   |
 | Logic App (Standard or Consumption) calling Azure service      | System-assigned managed identity                   | Logic Apps support managed identity for Azure connector authentication natively.                                      | Enable MI on the Logic App; configure the connector to use managed identity authentication.                 |
 | Azure API Management backend authentication                    | System-assigned managed identity                   | APIM policy `authentication-managed-identity` uses the APIM instance's MI to obtain a token for the backend.         | Backend must accept Entra tokens (validate `aud` claim against the backend's app ID).                      |
 | Azure Data Factory pipeline accessing Storage + SQL            | User-assigned managed identity shared across pipelines | Shared identity simplifies RBAC management; one RBAC assignment for one MI, used by multiple linked services. | Create user-assigned MI; attach to ADF; configure linked services to use managed identity authentication.  |
@@ -60,7 +60,7 @@ Yes → **Service principal + certificate credential** stored in an HSM or equiv
 Yes → This is not a workload identity pattern. Use OAuth 2.0 On-Behalf-Of (OBO) flow from a user-facing app; the workload identity should not impersonate users.
 
 ### Rule 6 — Is the workload a multi-tenant SaaS product?
-Yes → **Multi-tenant app registration** in the vendor's home tenant + per-customer service principals created on admin consent. Do not use managed identity (it is tenant-scoped).
+Yes → **Multi-tenant app registration** in the vendor's home tenant + per-organization service principals created on admin consent. Do not use managed identity (it is tenant-scoped).
 
 ---
 
@@ -111,7 +111,7 @@ When the decision matrix table is too long for a quick answer, use this condense
 | Azure Static Web Apps back-end API calling Graph              | User-assigned MI (linked Function or App Service) | Static Web Apps fronts a backend; backend uses MI.                  | Backend compute (Function/App Service) holds the MI; the static frontend has no server identity. |
 | AWS workload calling Microsoft Graph                           | Federated credential on app registration          | AWS STS issues OIDC-compatible tokens for IAM roles; Entra can federate against them. | Configure FIC with issuer `https://sts.amazonaws.com`, subject = AWS IAM role ARN. |
 | Service mesh (Istio / Linkerd) inter-service calls on AKS      | User-assigned MI + Workload Identity add-on per service | Each microservice gets its own Kubernetes SA and user-assigned MI.  | Avoid sharing one MI across all mesh services — per-service MI enables least-privilege.       |
-| Azure Managed Application (ISV) accessing customer resources   | Service principal created by the managed app deployment | ARM creates an SP in the customer's tenant when the managed app is deployed. | Customer reviews permissions granted to the managed app SP at deployment time.            |
+| Azure Managed Application (ISV) accessing organization resources   | Service principal created by the managed app deployment | ARM creates an SP in the your tenant when the managed app is deployed. | Organization reviews permissions granted to the managed app SP at deployment time.            |
 | Azure Key Vault backup / restore operations                    | System-assigned MI on the automation account       | Key Vault backup via Automation Account MI; avoids certificate management. | Grant `Key Vault Contributor` scoped to the specific vault.                                  |
 | Azure DevTest Labs automated operations                        | System-assigned MI on the DevTest Lab             | Labs support MI for storage and Key Vault access.                   | Enable MI on the lab resource; scope RBAC to lab resource group only.                          |
 
@@ -153,7 +153,7 @@ When you need an instant answer:
 - GitHub/GitLab/ADO pipeline → **federated credential on app registration**.
 - On-premises with OIDC issuer → **federated credential on app registration**.
 - On-premises, no OIDC → **service principal + certificate in HSM/KV**.
-- Multi-tenant SaaS vendor → **multi-tenant app registration + per-customer SP**.
+- Multi-tenant SaaS vendor → **multi-tenant app registration + per-organization SP**.
 - Workload calling API *as a user* → **not a workload identity pattern; use OBO**.
 - Anything with a password in YAML or a `.env` file → **critical finding; fix first**.
 

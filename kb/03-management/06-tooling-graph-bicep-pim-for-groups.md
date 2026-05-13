@@ -49,7 +49,7 @@ resource mi 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: 'mi-prod-plat-myworkload-001'
   location: resourceGroup().location
   tags: {
-    Owner: 'team@<customer>.com'
+    Owner: 'team@<organization>.com'
     Environment: 'prod'
     AppCode: 'APP-0042'
     Lifecycle: 'ongoing'
@@ -79,7 +79,7 @@ resource "azurerm_user_assigned_identity" "mi" {
   resource_group_name = azurerm_resource_group.rg.name
   location            = azurerm_resource_group.rg.location
   tags = {
-    Owner       = "team@<customer>.com"
+    Owner       = "team@<organization>.com"
     Environment = "prod"
     AppCode     = "APP-0042"
   }

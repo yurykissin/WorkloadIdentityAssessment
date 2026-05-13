@@ -1,6 +1,6 @@
 # Workload Identity Policy
 
-Workload identities — service principals, managed identities, and federated identity credentials — are non-human identities that represent applications, pipelines, and automated processes. They are not governed by joiner-mover-leaver HR processes and can accumulate permissions, stale credentials, and absent owners without any natural self-correction. This policy establishes the required baseline for all workload identities across `<customer>`'s Entra tenant.
+Workload identities — service principals, managed identities, and federated identity credentials — are non-human identities that represent applications, pipelines, and automated processes. They are not governed by joiner-mover-leaver HR processes and can accumulate permissions, stale credentials, and absent owners without any natural self-correction. This policy establishes the required baseline for all workload identities across `<organization>`'s Entra tenant.
 
 Path to configure:
 ```
@@ -35,7 +35,7 @@ Microsoft Graph > appManagementPolicies
 | Audit logs — app registration changes                         | **Streamed to Log Analytics**. Alert rules configured for: new credential added, redirect URI changed, owner changed, API permission added.                             |
 | Custom security attributes                                    | **Applied** to classify workload identities: `Sensitivity` (public / internal / confidential / restricted), `Owner` (email), `AppCode` (CMDB code).                    |
 | Workload identities in PIM for Groups                         | **Used for just-in-time access** where a workload identity requires periodic elevated access. Group membership managed via PIM; standard assignment is zero-standing privilege. Requires Entra ID P2 or Governance licence. |
-| Multi-tenant app registrations                                | **Approved exception only** — documented scope, permissions, publisher verification, and customer tenant notification required.                                          |
+| Multi-tenant app registrations                                | **Approved exception only** — documented scope, permissions, publisher verification, and your tenant notification required.                                          |
 | Service principal with subscription Owner RBAC                | **Approved exception only**. Quarterly recertification. Conditional Access policy applied.                                                                              |
 | Service principal with privileged Graph application permission | **Approved exception only**. Quarterly recertification. Conditional Access policy applied. Sign-in logs alerted.                                                       |
 
@@ -58,10 +58,10 @@ Assign a tier to each workload identity at provisioning. Record the tier in the 
 
 ## Scope and Applicability
 
-This policy applies to all non-human identities authenticating to Entra-protected resources in `<customer>`'s tenant, including:
+This policy applies to all non-human identities authenticating to Entra-protected resources in `<organization>`'s tenant, including:
 
 - Service principals created from internally-owned app registrations.
-- System-assigned and user-assigned managed identities on Azure resources in subscriptions under `<customer>`'s management group scope.
+- System-assigned and user-assigned managed identities on Azure resources in subscriptions under `<organization>`'s management group scope.
 - Federated identity credentials on app registrations and user-assigned MIs.
 
 This policy does **not** cover:

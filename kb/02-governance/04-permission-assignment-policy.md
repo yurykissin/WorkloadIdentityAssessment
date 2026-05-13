@@ -57,7 +57,7 @@ The following Graph application permissions are frequently over-granted. This su
 
 ## Scope and Applicability
 
-This policy applies to all workload identities in `<customer>`'s Entra tenant and Azure subscriptions, specifically:
+This policy applies to all workload identities in `<organization>`'s Entra tenant and Azure subscriptions, specifically:
 
 - All Microsoft Graph application permissions granted to service principals via admin consent.
 - All Azure RBAC assignments where the principal is a service principal or managed identity.

@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Orchestrator — runs scripts 01–08 in order, captures exit codes, prints
-    a consolidated summary matching the REPORT-TEMPLATE.md metric tables.
+    a consolidated summary matching the auto-generated HTML report (09-html-report.ps1).
 
 .DESCRIPTION
     Validates that Microsoft Graph and Azure contexts exist, then executes
@@ -9,8 +9,8 @@
     so partial results are still produced.
 
     At the end, writes run-summary.json and run-summary.md to OutputDir.
-    The .md summary is a fill-in-able snapshot the consultant can attach to the
-    engagement record.
+    The .md summary is a fill-in-able snapshot the assessor can attach to the
+    the assessment record.
 
     Prereq modules  : All modules required by scripts 01–08
     Prereq contexts : Connect-MgGraph + Connect-AzAccount (run before this)

@@ -53,7 +53,7 @@ When the standard control cannot be applied, the following compensating controls
 | Subscription-scope Contributor                     | PIM-eligible only — no standing assignment; quarterly recertification; alert on every activation and use.                                         |
 | Subscription-scope Owner                           | PIM-eligible, maximum 4-hour activation; dual-approval required; every activation reviewed by Identity Security; quarterly recertification.       |
 | User Access Administrator standing assignment      | Not permissible under any compensating control. Convert to PIM-eligible.                                                                          |
-| Multi-tenant app registration (broad audience)     | Verified publisher required; permissions documented; customer tenant consent reviewed; annual customer notification.                               |
+| Multi-tenant app registration (broad audience)     | Verified publisher required; permissions documented; your tenant consent reviewed; annual organization notification.                               |
 | No owner assignable                                | Custodian assigned (documented); migration plan to assign a real owner within 90 days; inventory flagged as "at-risk orphan".                      |
 | Permanent PIM assignment (no JIT)                  | Sign-in alerting for every activation; quarterly recertification mandatory; Conditional Access applied.                                            |
 

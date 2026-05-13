@@ -76,7 +76,7 @@ Privileged Role Administrator). Two ways:
 
 ```powershell
 # 1. Download the helper from the assessor's repo
-$url = 'https://raw.githubusercontent.com/yurykissin_microsoft/WorkloadIdentity/main/assessment/deploy/grant-graph-permissions.ps1'
+$url = 'https://raw.githubusercontent.com/yurykissin/WorkloadIdentityAssessment/main/assessment/deploy/grant-graph-permissions.ps1'
 Invoke-WebRequest $url -OutFile grant-graph-permissions.ps1
 
 # 2. Connect with the scopes needed to grant app roles
@@ -144,7 +144,7 @@ done
 
 [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FCHANGE-ME%2FCHANGE-ME%2Fmain%2Fassessment%2Fdeploy%2Fazuredeploy.json)
 
-> The repo path `yurykissin_microsoft/WorkloadIdentity` in the URL above must be replaced with
+> The repo path `yurykissin/WorkloadIdentityAssessment` in the URL above must be replaced with
 > the public GitHub repo your assessor published the templates to.
 
 Fill in the form:
@@ -209,7 +209,7 @@ auditability or because your tenant blocks GitHub egress):
 
 ```bash
 # Replace the placeholder repo path everywhere
-sed -i '' 's|yurykissin_microsoft/WorkloadIdentity|<your-org>/<your-repo>|g' deploy/*.json deploy/*.md
+sed -i '' 's|yurykissin/WorkloadIdentityAssessment|<your-org>/<your-repo>|g' deploy/*.json deploy/*.md
 ```
 
 Push to GitHub. The `artifactsBaseUrl` parameter on `azuredeploy.json`

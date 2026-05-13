@@ -1,0 +1,41 @@
+# Secrets and local config
+*.local.env
+*.secrets.json
+parameters.local.json
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# .NET
+bin/
+obj/
+*.user
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Azure
+.azure/
+
+# Local research scratch
+research-cache/_scratch/
+
+# Assessment outputs (tenant data — never commit)
+assessment/output/
+assessment/scripts/output/

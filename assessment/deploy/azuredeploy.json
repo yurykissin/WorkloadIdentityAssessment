@@ -1,0 +1,186 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": { "name": "WorkloadIdentityAssessment", "templateHash": "single-v1" },
+    "description": "Read-only Workload Identity assessment. PRE-REQUISITE: a user-assigned managed identity exists in the target tenant and has been granted the 7 Microsoft Graph application permissions listed in the README. Pass that UAMI's resource ID + client ID as parameters."
+  },
+  "parameters": {
+    "uamiResourceId": {
+      "type": "string",
+      "metadata": { "description": "Resource ID of an existing user-assigned managed identity that already has the 7 Microsoft Graph application permissions granted (see README). Format: /subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.ManagedIdentity/userAssignedIdentities/<name>" }
+    },
+    "uamiClientId": {
+      "type": "string",
+      "metadata": { "description": "Client ID (application ID) of the same UAMI." }
+    },
+    "namePrefix": {
+      "type": "string",
+      "defaultValue": "wia",
+      "minLength": 2,
+      "maxLength": 8,
+      "metadata": { "description": "Lowercase alphanumeric prefix used to name the storage account and deployment script." }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": { "description": "Azure region for storage + script. Defaults to the resource group region." }
+    },
+    "artifactsBaseUrl": {
+      "type": "string",
+      "defaultValue": "https://raw.githubusercontent.com/yurykissin_microsoft/WorkloadIdentity/main/assessment/scripts/",
+      "metadata": { "description": "HTTPS base URL where the 01..09 PowerShell scripts can be downloaded from. MUST end with a trailing slash." }
+    },
+    "artifactsSasToken": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": { "description": "Optional SAS token (include leading '?') if the artifacts URL points to a private storage account." }
+    },
+    "scriptIds": {
+      "type": "array",
+      "defaultValue": [
+        "01-tenant-context",
+        "02-inventory",
+        "03-credential-hygiene",
+        "04-federated-credentials",
+        "05-permission-surface",
+        "06-stale-and-orphaned",
+        "07-monitoring-coverage",
+        "08-ca-for-workload-identities"
+      ],
+      "metadata": { "description": "Collection scripts to run. Default = all 8." }
+    },
+    "forceUpdateTag": {
+      "type": "string",
+      "defaultValue": "[utcNow()]",
+      "metadata": { "description": "Forces re-execution of the deployment script on each redeploy. Default = current UTC time." }
+    }
+  },
+  "variables": {
+    "suffix": "[uniqueString(resourceGroup().id, parameters('uamiResourceId'))]",
+    "storageName": "[toLower(concat(parameters('namePrefix'), 'sa', variables('suffix')))]",
+    "containerName": "reports",
+    "scriptName": "[concat(parameters('namePrefix'), '-run-', uniqueString(parameters('forceUpdateTag')))]",
+    "readerRoleId": "acdd72a7-3385-48ef-bd42-f606fba81ae7",
+    "blobContribRoleId": "ba92f5b4-2d11-453d-a403-e96b0029c9fe",
+    "blobDelegatorRoleId": "db58b8e5-c6ad-4a2a-8342-4190687cbf4a",
+    "uamiPrincipalId": "[reference(parameters('uamiResourceId'), '2023-01-31', 'Full').properties.principalId]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-05-01",
+      "name": "[variables('storageName')]",
+      "location": "[parameters('location')]",
+      "sku": { "name": "Standard_LRS" },
+      "kind": "StorageV2",
+      "properties": {
+        "minimumTlsVersion": "TLS1_2",
+        "allowBlobPublicAccess": false,
+        "supportsHttpsTrafficOnly": true,
+        "publicNetworkAccess": "Enabled"
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-05-01",
+      "name": "[concat(variables('storageName'), '/default/', variables('containerName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+      ],
+      "properties": { "publicAccess": "None" }
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(resourceGroup().id, parameters('uamiResourceId'), variables('readerRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('readerRoleId'))]",
+        "principalId": "[variables('uamiPrincipalId')]",
+        "principalType": "ServicePrincipal"
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[concat('Microsoft.Storage/storageAccounts/', variables('storageName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), parameters('uamiResourceId'), variables('blobContribRoleId'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+      ],
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('blobContribRoleId'))]",
+        "principalId": "[variables('uamiPrincipalId')]",
+        "principalType": "ServicePrincipal"
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[concat('Microsoft.Storage/storageAccounts/', variables('storageName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), parameters('uamiResourceId'), variables('blobDelegatorRoleId'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+      ],
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('blobDelegatorRoleId'))]",
+        "principalId": "[variables('uamiPrincipalId')]",
+        "principalType": "ServicePrincipal"
+      }
+    },
+    {
+      "type": "Microsoft.Resources/deploymentScripts",
+      "apiVersion": "2023-08-01",
+      "name": "[variables('scriptName')]",
+      "location": "[parameters('location')]",
+      "kind": "AzurePowerShell",
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[parameters('uamiResourceId')]": {}
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('storageName'), 'default', variables('containerName'))]",
+        "[resourceId('Microsoft.Authorization/roleAssignments', guid(resourceGroup().id, parameters('uamiResourceId'), variables('readerRoleId')))]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), parameters('uamiResourceId'), variables('blobContribRoleId')))]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), parameters('uamiResourceId'), variables('blobDelegatorRoleId')))]"
+      ],
+      "properties": {
+        "azPowerShellVersion": "11.5",
+        "forceUpdateTag": "[parameters('forceUpdateTag')]",
+        "retentionInterval": "P1D",
+        "timeout": "PT1H",
+        "cleanupPreference": "OnSuccess",
+        "environmentVariables": [
+          { "name": "STORAGE",        "value": "[variables('storageName')]" },
+          { "name": "CONTAINER",      "value": "[variables('containerName')]" },
+          { "name": "ARTIFACTS_BASE", "value": "[parameters('artifactsBaseUrl')]" },
+          { "name": "ARTIFACTS_SAS",  "secureValue": "[parameters('artifactsSasToken')]" },
+          { "name": "UAMI_CLIENT_ID", "value": "[parameters('uamiClientId')]" },
+          { "name": "TENANT_ID",      "value": "[subscription().tenantId]" },
+          { "name": "SCRIPT_IDS",     "value": "[join(parameters('scriptIds'), ',')]" }
+        ],
+        "scriptContent": "$ErrorActionPreference='Stop'\n$ProgressPreference='SilentlyContinue'\nWrite-Host '== Workload Identity Assessment =='\nWrite-Host 'Tenant:' $env:TENANT_ID\nWrite-Host 'Storage:' $env:STORAGE '/' $env:CONTAINER\nWrite-Host 'Artifacts:' $env:ARTIFACTS_BASE\n\n$tmp = New-Item -ItemType Directory -Path (Join-Path $env:TMP ('wia-' + [guid]::NewGuid().ToString('N').Substring(0,8))) -Force\n$scriptDir = New-Item -ItemType Directory -Path (Join-Path $tmp.FullName 'scripts') -Force\n$outDir    = New-Item -ItemType Directory -Path (Join-Path $tmp.FullName 'output')  -Force\n\n# Install required Microsoft.Graph submodules (Az is preinstalled in the deployment script container)\n$gMods = @('Microsoft.Graph.Authentication','Microsoft.Graph.Identity.DirectoryManagement','Microsoft.Graph.Applications','Microsoft.Graph.Identity.Governance','Microsoft.Graph.Identity.SignIns','Microsoft.Graph.DirectoryObjects','Microsoft.Graph.Reports','Microsoft.Graph.Beta.Applications','Microsoft.Graph.Beta.Identity.Governance')\nforeach ($m in $gMods) {\n  if (-not (Get-Module -ListAvailable -Name $m)) {\n    Write-Host (\"Installing module: \" + $m)\n    Install-Module -Name $m -Scope CurrentUser -Force -AllowClobber -Repository PSGallery\n  }\n}\n\n# Connect using the deployment script's user-assigned identity\nConnect-AzAccount -Identity -AccountId $env:UAMI_CLIENT_ID -Tenant $env:TENANT_ID -ErrorAction Stop | Out-Null\nImport-Module Microsoft.Graph.Authentication -ErrorAction Stop\nConnect-MgGraph -Identity -ClientId $env:UAMI_CLIENT_ID -NoWelcome -ErrorAction Stop\n$ctx = Get-MgContext\nWrite-Host (\"Connected to Graph as MI. Scopes: \" + ($ctx.Scopes -join ', '))\n\n$required = @('Application.Read.All','Directory.Read.All','Policy.Read.All','RoleManagement.Read.Directory','AuditLog.Read.All')\n$missing = $required | Where-Object { $_ -notin $ctx.Scopes }\nif ($missing) {\n  Write-Warning ('UAMI is missing required Graph app roles: ' + ($missing -join ', ') + '. Grant them per the README, then redeploy.')\n  throw 'Missing Graph app role assignments on the UAMI. See README.'\n}\n\n# Download scripts\n$ids = $env:SCRIPT_IDS.Split(',') + @('09-html-report')\nforeach ($id in $ids) {\n  $url = $env:ARTIFACTS_BASE + $id + '.ps1' + $env:ARTIFACTS_SAS\n  $dest = Join-Path $scriptDir.FullName ($id + '.ps1')\n  Write-Host (\"Downloading: \" + $url)\n  Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing\n}\n\n# Run each collection script\nforeach ($id in $env:SCRIPT_IDS.Split(',')) {\n  $p = Join-Path $scriptDir.FullName ($id + '.ps1')\n  Write-Host (\"`n--- Running \" + $id + \" ---\")\n  try {\n    & $p -OutputDir $outDir.FullName\n  } catch {\n    Write-Warning ($id + ' failed: ' + $_)\n  }\n}\n\n# Build HTML report\n$reportPath = Join-Path $tmp.FullName 'report.html'\n& (Join-Path $scriptDir.FullName '09-html-report.ps1') -OutputDir $outDir.FullName -ReportPath $reportPath\n\n# Upload + SAS\n$stCtx = New-AzStorageContext -StorageAccountName $env:STORAGE -UseConnectedAccount\n$blobName = 'report-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.html'\nSet-AzStorageBlobContent -Context $stCtx -Container $env:CONTAINER -File $reportPath -Blob $blobName -Force -Properties @{ ContentType = 'text/html' } | Out-Null\n$expiry = (Get-Date).ToUniversalTime().AddDays(7)\n$sasUri = New-AzStorageBlobSASToken -Context $stCtx -Container $env:CONTAINER -Blob $blobName -Permission r -ExpiryTime $expiry -FullUri\n\n# Also upload raw outputs as a zip\n$zipPath = Join-Path $tmp.FullName 'raw-output.zip'\nCompress-Archive -Path (Join-Path $outDir.FullName '*') -DestinationPath $zipPath -Force\n$zipBlob = 'raw-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.zip'\nSet-AzStorageBlobContent -Context $stCtx -Container $env:CONTAINER -File $zipPath -Blob $zipBlob -Force | Out-Null\n$zipUri = New-AzStorageBlobSASToken -Context $stCtx -Container $env:CONTAINER -Blob $zipBlob -Permission r -ExpiryTime $expiry -FullUri\n\n$DeploymentScriptOutputs = @{\n  reportUrl = $sasUri\n  rawDataUrl = $zipUri\n  expiresAt = $expiry.ToString('o')\n  scriptsRun = $env:SCRIPT_IDS\n}\nWrite-Host (\"`nReport URL: \" + $sasUri)\n"
+      }
+    }
+  ],
+  "outputs": {
+    "reportUrl": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Resources/deploymentScripts', variables('scriptName')), '2023-08-01').outputs.reportUrl]"
+    },
+    "rawDataUrl": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Resources/deploymentScripts', variables('scriptName')), '2023-08-01').outputs.rawDataUrl]"
+    },
+    "expiresAt": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Resources/deploymentScripts', variables('scriptName')), '2023-08-01').outputs.expiresAt]"
+    },
+    "storageAccountName": {
+      "type": "string",
+      "value": "[variables('storageName')]"
+    }
+  }
+}

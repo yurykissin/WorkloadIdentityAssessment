@@ -27,6 +27,9 @@
       <OutputDir>/04-federated-credentials.json
       <OutputDir>/04-federated-credentials.csv
 
+.PARAMETER EntraOnly
+    Collect app-registration federation without Azure user-assigned managed-identity federation.
+
 .EXAMPLE
     ./scripts/04-federated-credentials.ps1 -OutputDir ./output/20260101-120000
 #>
@@ -34,11 +37,13 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [string]$OutputDir = (Join-Path (Split-Path -Parent $PSScriptRoot) ('output/' + (Get-Date -Format 'yyyyMMdd-HHmmss')))
+    [string]$OutputDir = (Join-Path (Split-Path -Parent $PSScriptRoot) ('output/' + (Get-Date -Format 'yyyyMMdd-HHmmss'))),
+    [switch]$EntraOnly
 )
 
 Set-StrictMode -Version 1.0
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'Assessment.Common.psm1') -ErrorAction Stop
 
 # ─── Module prerequisite check ────────────────────────────────────────────────
 $requiredModules = @('Microsoft.Graph.Authentication', 'Microsoft.Graph.Applications')
@@ -92,6 +97,7 @@ function Invoke-WithRetry {
 }
 
 function Assert-Contexts {
+    Assert-AssessmentContexts -RequireAzure:(-not $EntraOnly)
     $mgCtx = Get-MgContext
     if ($null -eq $mgCtx) {
         Write-Error "No Microsoft Graph context. Run: Connect-MgGraph -Scopes 'Application.Read.All'"
@@ -131,9 +137,7 @@ function Get-AppRegFICs {
     param()
 
     Write-Host "  Fetching app registrations for FIC enumeration..." -NoNewline
-    $apps = Invoke-WithRetry {
-        Get-MgApplication -All -Property 'id,appId,displayName' -ErrorAction Stop
-    }
+    $apps = @(Get-AssessmentDirectoryData -Resource applications -Relationship federatedIdentityCredentials)
     Write-Host " $($apps.Count) app registrations." -ForegroundColor Green
 
     $rows = [System.Collections.Generic.List[PSObject]]::new()
@@ -145,9 +149,7 @@ function Get-AppRegFICs {
         }
 
         try {
-            $fics = Invoke-WithRetry {
-                Get-MgApplicationFederatedIdentityCredential -ApplicationId $app.Id -All -ErrorAction Stop
-            }
+            $fics = @($app.federatedIdentityCredentials)
             foreach ($fic in $fics) {
                 $issuerCat = Get-IssuerCategory -Issuer $fic.Issuer
                 $subjectClass = Get-SubjectClassification -Subject $fic.Subject
@@ -263,8 +265,8 @@ function Invoke-FederatedCredentials {
     Write-Host "═══════════════════════════════════════════════════════════════" -ForegroundColor Cyan
     Write-Host ""
 
-    $appRegFics = Get-AppRegFICs
-    $miFics     = Get-UserAssignedMIFICs
+    $appRegFics = @(Get-AppRegFICs)
+    $miFics     = @(if (-not $EntraOnly) { Get-UserAssignedMIFICs })
 
     $allFics = [System.Collections.Generic.List[PSObject]]::new()
     foreach ($r in @($appRegFics)) { $allFics.Add([PSObject]$r) }
@@ -275,7 +277,7 @@ function Invoke-FederatedCredentials {
     if ($allFics.Count -gt 0) {
         $allFics | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
     } else {
-        [PSCustomObject]@{ Note = 'No federated identity credentials found' } |
+        [PSCustomObject]@{ Note = $(if ($EntraOnly) { 'No app-registration FICs found; managed-identity FICs not collected' } else { 'No federated identity credentials found' }) } |
             Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
     }
 
@@ -286,12 +288,13 @@ function Invoke-FederatedCredentials {
 
     $jsonResult = @{
         CollectedAt        = (Get-Date -Format 'o')
+        AzureCollected     = -not $EntraOnly
         TotalFICs          = $allFics.Count
         FICsOnAppRegs      = $appRegFics.Count
-        FICsOnUserAssignedMIs = $miFics.Count
+        FICsOnUserAssignedMIs = if ($EntraOnly) { $null } else { $miFics.Count }
         ByIssuerCategory   = @($issuerStats   | ForEach-Object { @{ Category = $_.Name; Count = $_.Count } })
         BySubjectClass     = @($subjectStats  | ForEach-Object { @{ Classification = $_.Name; Count = $_.Count } })
-        FederatedCredentials = @($allFics)
+        FederatedCredentials = $allFics.ToArray()
     }
     $jsonPath = Join-Path $OutputDir '04-federated-credentials.json'
     $jsonResult | ConvertTo-Json -Depth 6 | Out-File -FilePath $jsonPath -Encoding UTF8
@@ -307,7 +310,11 @@ function Invoke-FederatedCredentials {
     Write-Host "═══════════════════════════════════════════════════════════════" -ForegroundColor Cyan
     Write-Host "  Total FICs                    : $($allFics.Count)"
     Write-Host "    On app registrations        : $($appRegFics.Count)"
-    Write-Host "    On user-assigned MIs        : $($miFics.Count)"
+    if ($EntraOnly) {
+        Write-Host '    On user-assigned MIs        : Not collected (Entra only)'
+    } else {
+        Write-Host "    On user-assigned MIs        : $($miFics.Count)"
+    }
     Write-Host ""
     Write-Host "  By issuer category:" -ForegroundColor White
     foreach ($g in $issuerStats) {

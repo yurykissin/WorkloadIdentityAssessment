@@ -118,6 +118,20 @@ directly — you have to use the **Enterprise applications** blade.
 
 Option A is far less tedious. Use it if you can.
 
+Optional Agent ID and risky-service-principal collection needs additional
+**read-only** app roles. Opt in when granting permissions:
+
+```powershell
+./grant-graph-permissions.ps1 -PrincipalId '<uami-principal-id>' -IncludeOptionalWorkloadEvidence
+```
+
+This adds `AgentIdentity.Read.All`, `AgentIdentityBlueprint.Read.All` and
+`IdentityRiskyServicePrincipal.Read.All`. It does not bypass feature licensing
+or cloud/API availability. Missing optional permissions leave those capabilities
+unavailable while baseline collection continues. The assessment itself performs
+GETs; this separate permission-granting bootstrap is an administrative write.
+See [capability and manual-assessment limits](../README.md#controls-sources-and-evidence-limits).
+
 ### Option C — Azure CLI / REST one-liner per permission
 
 ```bash
@@ -157,6 +171,12 @@ Fill in the form:
 | `namePrefix`       | `wia` (default — controls the storage account name) |
 | `artifactsBaseUrl` | as provided by your assessor (must end with `/`) |
 
+The artifact host must preserve the assessment directory layout: the base points
+to `scripts/`, including its `report-assets/` child, and `controls/catalog.json`
+is a sibling of `scripts/`. The downloader requests `../controls/catalog.json`.
+For SAS-protected hosting, that relative path must be covered by the supplied
+token as well as the script and asset paths.
+
 Click **Create**. The template:
 
 1. Creates a private storage account + a `reports` blob container.
@@ -167,14 +187,17 @@ Click **Create**. The template:
    * Installs the Microsoft Graph PowerShell modules (~3 min).
    * Connects to Graph as the UAMI.
    * Verifies the required permissions are granted (fails fast otherwise).
-   * Downloads `01..09.ps1` from `artifactsBaseUrl`.
-   * Runs the 8 collection scripts (~3 min for typical tenants).
+   * Downloads the selected collectors, `Assessment.Common.psm1`, `Assessment.Controls.psm1`, `../controls/catalog.json`,
+     `09-html-report.ps1` and the three
+     `report-assets/` files from `artifactsBaseUrl`.
+   * Runs the selected collection scripts with one shared, in-memory directory
+     cache. Duration depends on tenant size, Graph latency and throttling.
    * Builds the HTML report.
    * Uploads HTML + a raw-data ZIP to your storage account.
    * Mints a 7-day SAS URL for each.
    * Auto-deletes itself on success.
 
-When the deployment finishes (~7–10 min total), open the **Outputs** tab.
+When the deployment finishes, open the **Outputs** tab.
 You'll see:
 
 * `reportUrl`  — open in a browser to view the HTML report
@@ -215,6 +238,23 @@ sed -i '' 's|yurykissin/WorkloadIdentityAssessment|<your-org>/<your-repo>|g' dep
 Push to GitHub. The `artifactsBaseUrl` parameter on `azuredeploy.json`
 accepts any HTTPS-reachable URL ending in `/`. If hosted in a private
 storage account, also set `artifactsSasToken` (include the leading `?`).
+
+Publish the collectors, shared module, renderer and assets from the same version, preserving this
+layout beneath `artifactsBaseUrl`:
+
+```text
+Assessment.Common.psm1
+09-html-report.ps1
+report-assets/template.html
+report-assets/styles.css
+report-assets/app.js
+```
+
+The deployment downloads the assets beside the renderer and embeds them into
+the final HTML. Report readers need only the HTML file, not the asset folder.
+The deployment's flat output directory remains supported. Local validation
+parses the ARM JSON and embedded PowerShell and checks asset packaging; it does
+not execute an Azure deployment.
 
 ---
 

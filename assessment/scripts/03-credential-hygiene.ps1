@@ -23,7 +23,9 @@
     Prereq modules  : Microsoft.Graph.Authentication,
                       Microsoft.Graph.Applications
 
-    Prereq scopes   : Application.Read.All
+    Prereq scopes   : Application.Read.All; AuditLog.Read.All for preview credential activity.
+    Preview activity is matched by application object ID, credential key ID and type.
+    Activity coverage is limited to the app-registration credentials inventoried here.
 
     Prereq Az roles : none (Entra-only script)
 
@@ -43,6 +45,7 @@ param(
 
 Set-StrictMode -Version 1.0
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'Assessment.Common.psm1') -ErrorAction Stop
 
 # ─── Module prerequisite check ────────────────────────────────────────────────
 $requiredModules = @('Microsoft.Graph.Authentication', 'Microsoft.Graph.Applications')
@@ -118,6 +121,60 @@ function Get-Median {
     return $sorted[$mid]
 }
 
+function Merge-CredentialActivity {
+    [CmdletBinding()]
+    param(
+        [object[]]$Credentials,
+        [Parameter(Mandatory)]$Activity,
+        [datetimeoffset]$Now = [datetimeoffset]::UtcNow
+    )
+
+    $index = @{}
+    foreach ($record in $Activity.Records) {
+        if ($record.credentialOrigin -ne 'application' -or -not $record.appObjectId -or -not $record.keyId -or
+            $record.keyType -notin @('clientSecret', 'certificate')) { continue }
+        $key = "$($record.appObjectId)|$($record.keyType)|$($record.keyId)"
+        if (-not $index.ContainsKey($key)) { $index[$key] = [System.Collections.Generic.List[object]]::new() }
+        $index[$key].Add($record)
+    }
+    foreach ($credential in $Credentials) {
+        $keyType = if ($credential.CredentialType -eq 'password') { 'clientSecret' } else { 'certificate' }
+        $key = "$($credential.AppObjectId)|$keyType|$($credential.KeyId)"
+        $matches = @()
+        if ($Activity.State -eq 'Available' -and $credential.AppObjectId -and $credential.KeyId -and $index.ContainsKey($key)) {
+            $matches = @($index[$key].ToArray() | Where-Object { -not $_.appId -or $_.appId -eq $credential.AppId })
+        }
+        $lastUse = $null
+        $incomplete = $false
+        foreach ($record in $matches) {
+            $observed = [datetimeoffset]::MinValue
+            if (-not [datetimeoffset]::TryParse([string]$record.signInActivity.lastSignInDateTime, [ref]$observed) -or
+                $observed.Year -eq 1 -or $observed -gt $Now -or
+                ($credential.StartDateTime -and $observed -lt [datetimeoffset]$credential.StartDateTime)) {
+                $incomplete = $true
+            } elseif ($null -eq $lastUse -or $observed -gt $lastUse) {
+                $lastUse = $observed
+            }
+        }
+        $daysSince = if ($null -ne $lastUse) { [math]::Floor(($Now - $lastUse).TotalDays) } else { $null }
+        $inactive = if ($matches.Count -gt 0 -and -not $incomplete -and $null -ne $daysSince) { $daysSince -ge 90 } else { $null }
+        $status = if ($Activity.State -ne 'Available') { 'Not assessed' } elseif ($matches.Count -eq 0) { 'No matching activity' } elseif ($incomplete) { 'Incomplete activity' } else { 'Matched' }
+        $usage = if ($null -eq $inactive) { 'Unknown' } elseif ($inactive) { 'Inactive >= 90 days (review)' } else { 'Recent observed activity' }
+        $fields = @{
+            ActivityMatchStatus = $status
+            LastCredentialSignInDateTime = if ($null -ne $lastUse) { $lastUse.ToUniversalTime().ToString('o') } else { $null }
+            DaysSinceCredentialSignIn = $daysSince
+            InactiveCredential = $inactive
+            UsageAssessment = $usage
+            CredentialReviewRequired = if ($credential.Expired -or $inactive -eq $true) { $true } elseif ($Activity.State -ne 'Available') { $null } else { $status -ne 'Matched' }
+            ActivityEvidence = @($matches | ForEach-Object {
+                [pscustomobject]@{ ActivityId = $_.id; ResourceId = $_.resourceId; LastSignInDateTime = $_.signInActivity.lastSignInDateTime }
+            })
+        }
+        foreach ($name in $fields.Keys) { $credential | Add-Member -NotePropertyName $name -NotePropertyValue $fields[$name] -Force }
+    }
+}
+
 function Invoke-CredentialHygiene {
     [CmdletBinding()]
     param([string]$OutputDir)
@@ -135,9 +192,9 @@ function Invoke-CredentialHygiene {
     Write-Host ""
 
     Write-Host "  Fetching app registrations with credential details..." -NoNewline
-    $apps = Invoke-WithRetry {
+    $apps = @(Invoke-WithRetry {
         Get-MgApplication -All -Property 'id,appId,displayName,passwordCredentials,keyCredentials' -ErrorAction Stop
-    }
+    })
     Write-Host " $($apps.Count) app registrations." -ForegroundColor Green
 
     $today = [datetime]::UtcNow
@@ -212,6 +269,9 @@ function Invoke-CredentialHygiene {
     }
     if ($apps.Count -gt 50) { Write-Progress -Activity 'Analysing credentials' -Completed }
 
+    $activity = Get-AssessmentCredentialActivity
+    Merge-CredentialActivity -Credentials $credRows.ToArray() -Activity $activity
+
     # ── Aggregations ──────────────────────────────────────────────────────────
     $activePwd     = @($credRows | Where-Object { $_.CredentialType -eq 'password' -and -not $_.Expired })
     $activeKey     = @($credRows | Where-Object { $_.CredentialType -eq 'key'      -and -not $_.Expired })
@@ -242,6 +302,8 @@ function Invoke-CredentialHygiene {
         ActiveSecretsOver24Months       = $longLived24.Count
         ExpiredCredentialsStillAttached = $expiredCreds.Count
         AppRegsWithMoreThan2ActiveCreds = $multiCredApps.Count
+        InactiveCredentials90Days      = if ($activity.State -eq 'Available') { @($credRows | Where-Object { $_.InactiveCredential -eq $true }).Count } else { $null }
+        CredentialsWithoutActivityEvidence = if ($activity.State -eq 'Available') { @($credRows | Where-Object { $_.UsageAssessment -eq 'Unknown' }).Count } else { $null }
     }
 
     # ── Write CSV ─────────────────────────────────────────────────────────────
@@ -252,8 +314,11 @@ function Invoke-CredentialHygiene {
     $jsonResult = @{
         CollectedAt  = (Get-Date -Format 'o')
         Aggregations = $aggregations
-        Credentials  = @($credRows)
+        CredentialActivity = $activity | Select-Object -ExcludeProperty Records
+        Credentials  = $credRows.ToArray()
     }
+    $jsonResult.CredentialActivity | Add-Member -NotePropertyName InactiveThresholdDays -NotePropertyValue 90
+    $jsonResult.CredentialActivity | Add-Member -NotePropertyName Scope -NotePropertyValue 'App-registration credentials only; service-principal-origin activity is not matched.'
     $jsonPath = Join-Path $OutputDir '03-credential-hygiene.json'
     $jsonResult | ConvertTo-Json -Depth 6 | Out-File -FilePath $jsonPath -Encoding UTF8
 
@@ -280,6 +345,11 @@ function Invoke-CredentialHygiene {
     Write-Host "  Expired creds still attached      : $($expiredCreds.Count)" -ForegroundColor $expColor
     $multiColor = if ($multiCredApps.Count -eq 0) { 'Green' } else { 'Yellow' }
     Write-Host "  App regs with > 2 active creds    : $($multiCredApps.Count)" -ForegroundColor $multiColor
+    Write-Host "  Credential activity (preview)     : $($activity.State)"
+    if ($activity.State -eq 'Available') {
+        Write-Host "  Inactive credentials >= 90 days   : $($aggregations.InactiveCredentials90Days) (review candidates)"
+        Write-Host "  Unknown credential usage         : $($aggregations.CredentialsWithoutActivityEvidence)"
+    }
     Write-Host ""
     Write-Host "  Output:"
     Write-Host "    $jsonPath"

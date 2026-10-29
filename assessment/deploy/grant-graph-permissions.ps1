@@ -37,6 +37,8 @@ param(
 
     [string] $TenantId,
 
+    [switch] $IncludeOptionalWorkloadEvidence,
+
     [string[]] $GraphAppRoles = @(
         'Application.Read.All',
         'Directory.Read.All',
@@ -50,6 +52,9 @@ param(
 
 Set-StrictMode -Version 1.0
 $ErrorActionPreference = 'Stop'
+if ($IncludeOptionalWorkloadEvidence) {
+    $GraphAppRoles += @('AgentIdentity.Read.All','AgentIdentityBlueprint.Read.All','IdentityRiskyServicePrincipal.Read.All')
+}
 
 function Write-Step($msg) { Write-Host "  $msg" -ForegroundColor Cyan }
 function Write-OK($msg)   { Write-Host "  ✓ $msg"  -ForegroundColor Green }

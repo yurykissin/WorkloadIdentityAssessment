@@ -4,16 +4,40 @@
     a consolidated summary matching the auto-generated HTML report (09-html-report.ps1).
 
 .DESCRIPTION
-    Validates that Microsoft Graph and Azure contexts exist, then executes
+    Uses standard Graph browser authentication and process-scoped Azure
+    authentication, then executes
     each assessment script in sequence. Continues on individual script failures
     so partial results are still produced.
 
-    At the end, writes run-summary.json and run-summary.md to OutputDir.
+    At the end, writes run-summary.json, run-summary.md and report.html to OutputDir.
+    Opens the HTML report unless -NoOpen is specified or Graph uses app-only authentication.
     The .md summary is a fill-in-able snapshot the assessor can attach to the
     the assessment record.
 
     Prereq modules  : All modules required by scripts 01–08
-    Prereq contexts : Connect-MgGraph + Connect-AzAccount (run before this)
+    Interactive authentication is handled by this entry point.
+    Existing app-only contexts are reused without interactive sign-in.
+    Normal interactive runs sign out of their selected SDKs on exit, including failures.
+
+.PARAMETER TenantId
+    Optional assessment tenant ID or domain for interactive sign-in.
+    Otherwise, use the browser sign-in selection, not the previous Graph tenant.
+
+.PARAMETER UseExistingContext
+    Do not sign in. Validate caller-managed Graph and, if selected, Azure contexts instead.
+    With this switch, TenantId must be a GUID.
+
+.PARAMETER NoOpen
+    Generate the HTML report without opening a browser.
+
+.PARAMETER IncludeOptionalWorkloadEvidence
+    Request additional read-only Agent ID and risky service principal scopes.
+    Caller-managed contexts must already have these permissions and applicable roles.
+
+.PARAMETER AssessmentScope
+    Entra collects directory identities and policies without Azure authentication.
+    EntraAndAzure also collects Azure resources, RBAC, Key Vault and monitoring.
+    Interactive runs ask when omitted. Caller-managed/app-only runs default to EntraAndAzure.
 
 .PARAMETER OutputDir
     Directory where all script outputs land.
@@ -40,11 +64,29 @@ param(
     [string[]]$SubscriptionIds = @(),
 
     [Parameter()]
-    [string[]]$Skip = @()
+    [string[]]$Skip = @(),
+
+    [Parameter()]
+    [string]$TenantId,
+
+    [Parameter()]
+    [switch]$UseExistingContext,
+
+    [Parameter()]
+    [switch]$NoOpen,
+
+    [Parameter()]
+    [ValidateSet('Entra', 'EntraAndAzure')]
+    [string]$AssessmentScope,
+
+    [switch]$IncludeOptionalWorkloadEvidence
 )
 
 Set-StrictMode -Version 1.0
-$ErrorActionPreference = 'Continue'   # Orchestrator level — don't stop on script failures
+$ErrorActionPreference = 'Stop'
+$commonModulePath = Join-Path $PSScriptRoot 'Assessment.Common.psm1'
+# Refresh only at entry, before starting the shared per-run collection cache.
+Import-Module $commonModulePath -Force -Global -ErrorAction Stop
 
 $ScriptRoot = $PSScriptRoot
 
@@ -55,7 +97,7 @@ function Invoke-AssessmentScript {
         [string]$Number,
         [string]$Name,
         [string]$ScriptPath,
-        [string[]]$ExtraArgs = @()
+        [hashtable]$ExtraArgs = @{}
     )
 
     if ($Number -in $Skip) {
@@ -71,12 +113,19 @@ function Invoke-AssessmentScript {
     Write-Host ""
     Write-Host "  ── Running $Number-$Name ──────────────────────────" -ForegroundColor Cyan
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $errorMessage = $null
+    $errorLocation = $null
 
     try {
+        $global:LASTEXITCODE = 0
         & $ScriptPath -OutputDir $OutputDir @ExtraArgs
-        $exitCode = $LASTEXITCODE
+        $succeeded = $?
+        $exitCode = $global:LASTEXITCODE
         if ($null -eq $exitCode) { $exitCode = 0 }
+        if (-not $succeeded -and $exitCode -eq 0) { $exitCode = 1 }
     } catch {
+        $errorMessage = $_.Exception.Message
+        $errorLocation = $_.ScriptStackTrace
         Write-Host "  [ERROR] $Number-$Name threw: $_" -ForegroundColor Red
         $exitCode = 1
     }
@@ -92,22 +141,30 @@ function Invoke-AssessmentScript {
         Status   = $status
         ExitCode = $exitCode
         Duration = [int]$sw.Elapsed.TotalSeconds
+        ErrorMessage = $errorMessage
+        ErrorLocation = $errorLocation
     }
 }
 
 function Assert-Contexts {
+    param([bool]$IncludeAzure = $true)
     Write-Host "  Validating contexts..." -NoNewline
+    Assert-AssessmentContexts -RequireAzure:$IncludeAzure
     $mgCtx = Get-MgContext
     if ($null -eq $mgCtx) {
         Write-Error "No Microsoft Graph context. Run: Connect-MgGraph -Scopes '...'"
         exit 2
+    }
+    if (-not $IncludeAzure) {
+        Write-Host " Graph: $($mgCtx.Account) | Tenant: $($mgCtx.TenantId) | Entra only" -ForegroundColor Green
+        return
     }
     $azCtx = Get-AzContext
     if ($null -eq $azCtx) {
         Write-Error "No Azure context. Run: Connect-AzAccount"
         exit 2
     }
-    Write-Host " Graph: $($mgCtx.Account) | Az: $($azCtx.Account.Id)" -ForegroundColor Green
+    Write-Host " Graph: $($mgCtx.Account) | Az: $($azCtx.Account.Id) | Tenant: $($mgCtx.TenantId)" -ForegroundColor Green
 }
 
 function Set-AzSubscriptionScope {
@@ -115,6 +172,7 @@ function Set-AzSubscriptionScope {
     param([string[]]$SubscriptionIds)
 
     if ($SubscriptionIds.Count -eq 0) {
+        $env:ASSESSMENT_SUBSCRIPTION_IDS = $null
         Write-Host "  No SubscriptionIds specified — using all subscriptions in Az context." -ForegroundColor Gray
         return
     }
@@ -125,10 +183,10 @@ function Set-AzSubscriptionScope {
     # Set-AzContext scopes Get-Az* cmdlets to a single sub — for cross-sub we rely on Resource Graph.
     $env:ASSESSMENT_SUBSCRIPTION_IDS = $SubscriptionIds -join ','
     try {
-        Set-AzContext -SubscriptionId $SubscriptionIds[0] -ErrorAction Stop | Out-Null
+        Set-AzContext -TenantId (Get-MgContext).TenantId -SubscriptionId $SubscriptionIds[0] -Scope Process -ErrorAction Stop | Out-Null
         Write-Host "  Default subscription set to: $($SubscriptionIds[0])" -ForegroundColor Gray
     } catch {
-        Write-Warning "Could not set Az context to $($SubscriptionIds[0]): $_"
+        throw "Could not set Az context to $($SubscriptionIds[0]): $_"
     }
 }
 
@@ -189,6 +247,10 @@ function Read-ScriptSummary {
             $summary['Secrets24Mo']           = $agg.ActiveSecretsOver24Months
             $summary['ExpiredCreds']          = $agg.ExpiredCredentialsStillAttached
             $summary['MultiCredApps']         = $agg.AppRegsWithMoreThan2ActiveCreds
+            $activityAvailable = $d.CredentialActivity.State -eq 'Available'
+            $summary['CredentialActivityState'] = if ($d.CredentialActivity) { $d.CredentialActivity.State } else { 'Not collected' }
+            $summary['InactiveCredentials90Days'] = if ($activityAvailable) { $agg.InactiveCredentials90Days } else { 'Not assessed' }
+            $summary['UnknownCredentialUsage'] = if ($activityAvailable) { $agg.CredentialsWithoutActivityEvidence } else { 'Not assessed' }
         } catch { Write-Verbose "Could not parse 03: $_" }
     }
 
@@ -291,7 +353,7 @@ function Write-ConsolidatedSummary {
     )
 
     function Val([string]$k) { if ($Summary.ContainsKey($k) -and $null -ne $Summary[$k]) { $Summary[$k] } else { '—' } }
-    function YN([string]$k)  { if ($Summary.ContainsKey($k)) { if ($Summary[$k]) { 'YES' } else { 'NO' } } else { '—' } }
+    function YN([string]$k)  { if ($Summary[$k] -is [string] -and $Summary[$k] -eq 'Not collected') { 'Not collected' } elseif ($Summary.ContainsKey($k)) { if ($Summary[$k]) { 'YES' } else { 'NO' } } else { '—' } }
 
     $lines = [System.Collections.Generic.List[string]]::new()
 
@@ -359,6 +421,9 @@ function Write-ConsolidatedSummary {
     Write-Host "  Median secret lifetime          : $(Val 'MedianSecretLifeDays') days"
     Write-Host "  Max secret lifetime             : $(Val 'MaxSecretLifeDays') days"
     Write-Host "  App regs with > 2 active creds  : $(Val 'MultiCredApps')"
+    Write-Host "  Credential activity (preview)  : $(Val 'CredentialActivityState')"
+    Write-Host "  Inactive credentials >= 90 days : $(Val 'InactiveCredentials90Days') (review)"
+    Write-Host "  Unknown credential usage       : $(Val 'UnknownCredentialUsage')"
     Write-Host ""
     Write-Host "  §6. KEY VAULT" -ForegroundColor White
     Write-Host "  ─────────────────────────────────────────────────────────────────"
@@ -393,7 +458,7 @@ function Write-ConsolidatedSummary {
     Write-Host "  SCRIPT RUN RESULTS" -ForegroundColor White
     Write-Host "  ─────────────────────────────────────────────────────────────────"
     foreach ($r in $ScriptResults) {
-        $c = switch ($r.Status) { 'OK' { 'Green' } 'Skipped' { 'Gray' } default { 'Red' } }
+        $c = switch ($r.Status) { 'OK' { 'Green' } 'Skipped' { 'Gray' } 'Not collected' { 'Gray' } default { 'Red' } }
         Write-Host "    [$($r.Status.PadRight(7))] $($r.Number)-$($r.Name) ($($r.Duration)s)" -ForegroundColor $c
     }
 
@@ -411,6 +476,7 @@ function Write-ConsolidatedSummary {
 |-------|-------|
 | Tenant | $(Val 'TenantName') |
 | Tenant ID | $(Val 'TenantId') |
+| Assessment scope | $(Val 'AssessmentScope') |
 | Run timestamp | $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC') |
 | Output directory | $OutputDir |
 | Total run time | ${TotalDuration}s |
@@ -480,6 +546,9 @@ function Write-ConsolidatedSummary {
 | Median secret lifetime | $(Val 'MedianSecretLifeDays') days |
 | Max secret lifetime | $(Val 'MaxSecretLifeDays') days |
 | App regs with > 2 active credentials | $(Val 'MultiCredApps') |
+| Credential activity (preview) | $(Val 'CredentialActivityState') |
+| Inactive credentials >= 90 days (review) | $(Val 'InactiveCredentials90Days') |
+| Unknown credential usage | $(Val 'UnknownCredentialUsage') |
 
 ## §6 Key Vault
 
@@ -539,6 +608,7 @@ $(($ScriptResults | ForEach-Object { "| $($_.Number)-$($_.Name) | $($_.Status) |
         TenantName     = $Summary['TenantName']
         OutputDir      = $OutputDir
         TotalDuration  = $TotalDuration
+        AssessmentScope = $Summary['AssessmentScope']
         ScriptResults  = $ScriptResults
         Metrics        = $Summary
     } | ConvertTo-Json -Depth 5 | Out-File -FilePath $jsonPath -Encoding UTF8
@@ -554,21 +624,57 @@ function Invoke-RunAll {
     param(
         [string]$OutputDir,
         [string[]]$SubscriptionIds,
-        [string[]]$Skip
+        [string[]]$Skip,
+        [string]$TenantId,
+        [switch]$UseExistingContext,
+        [switch]$NoOpen,
+        [string]$AssessmentScope
     )
+
+    if (-not $AssessmentScope) {
+        $appOnly = (Get-Command Get-MgContext -ErrorAction SilentlyContinue) -and (Get-MgContext).AuthType -eq 'AppOnly'
+        if ($UseExistingContext -or $appOnly) {
+            $AssessmentScope = 'EntraAndAzure'
+        } else {
+            Write-Host ''
+            Write-Host '  1. Entra only - apps, service principals, credentials, permissions and policies. Graph sign-in only.'
+            Write-Host '  2. Entra + Azure - also managed identity resources, Azure RBAC, Key Vault and monitoring. Adds Azure sign-in.'
+            do {
+                $choice = Read-Host 'Choose assessment scope [1]'
+                if ($choice -notin @('', '1', '2')) { Write-Host '  Enter 1 or 2.' -ForegroundColor Yellow }
+            } while ($choice -notin @('', '1', '2'))
+            $AssessmentScope = if ($choice -eq '2') { 'EntraAndAzure' } else { 'Entra' }
+        }
+    }
+    $includeAzure = $AssessmentScope -eq 'EntraAndAzure'
+    if (-not $includeAzure -and $SubscriptionIds.Count -gt 0) {
+        throw 'SubscriptionIds requires -AssessmentScope EntraAndAzure.'
+    }
+    if (-not $includeAzure -and (Test-Path -LiteralPath $OutputDir)) {
+        $existing = @(Get-ChildItem -LiteralPath $OutputDir -File | Where-Object Name -match '^0[1-8]-.*\.json$')
+        if ($existing.Count -gt 0) {
+            throw 'Entra-only collection requires a fresh output folder to avoid including stale Azure exports. Use 09-html-report.ps1 to render existing exports.'
+        }
+    }
 
     Write-Host ""
     Write-Host "═══════════════════════════════════════════════════════════════════════" -ForegroundColor Cyan
     Write-Host "  WORKLOAD IDENTITY ASSESSMENT — run-all.ps1" -ForegroundColor Cyan
     Write-Host "  Output: $OutputDir" -ForegroundColor Gray
+    Write-Host "  Assessment scope: $AssessmentScope" -ForegroundColor Gray
     Write-Host "═══════════════════════════════════════════════════════════════════════" -ForegroundColor Cyan
     Write-Host ""
 
-    # Validate contexts
-    Assert-Contexts
+    Connect-AssessmentContexts -TenantId $TenantId -UseExistingContext:$UseExistingContext -IncludeAzure:$includeAzure -IncludeOptionalWorkloadEvidence:$IncludeOptionalWorkloadEvidence
+    Assert-Contexts -IncludeAzure:$includeAzure
+    Start-AssessmentCollection -IncludeAzure:$includeAzure
 
     # Set subscription scope
-    Set-AzSubscriptionScope -SubscriptionIds $SubscriptionIds
+    if ($includeAzure) {
+        Set-AzSubscriptionScope -SubscriptionIds $SubscriptionIds
+    } else {
+        $env:ASSESSMENT_SUBSCRIPTION_IDS = $null
+    }
 
     # Create output dir
     if (-not (Test-Path $OutputDir)) {
@@ -577,21 +683,29 @@ function Invoke-RunAll {
 
     # ── Define script manifest ────────────────────────────────────────────────
     $scripts = @(
-        @{ Number = '01'; Name = 'tenant-context';           Script = Join-Path $ScriptRoot '01-tenant-context.ps1';            ExtraArgs = @() }
-        @{ Number = '02'; Name = 'inventory';                Script = Join-Path $ScriptRoot '02-inventory.ps1';                  ExtraArgs = @() }
-        @{ Number = '03'; Name = 'credential-hygiene';       Script = Join-Path $ScriptRoot '03-credential-hygiene.ps1';         ExtraArgs = @() }
-        @{ Number = '04'; Name = 'federated-credentials';    Script = Join-Path $ScriptRoot '04-federated-credentials.ps1';      ExtraArgs = @() }
-        @{ Number = '05'; Name = 'permission-surface';       Script = Join-Path $ScriptRoot '05-permission-surface.ps1';         ExtraArgs = @() }
-        @{ Number = '06'; Name = 'stale-and-orphaned';       Script = Join-Path $ScriptRoot '06-stale-and-orphaned.ps1';         ExtraArgs = @() }
-        @{ Number = '07'; Name = 'monitoring-coverage';      Script = Join-Path $ScriptRoot '07-monitoring-coverage.ps1';        ExtraArgs = @() }
-        @{ Number = '08'; Name = 'ca-for-workload-identities'; Script = Join-Path $ScriptRoot '08-ca-for-workload-identities.ps1'; ExtraArgs = @('-InventoryOutputDir', $OutputDir) }
+        @{ Number = '01'; Name = 'tenant-context';           Script = Join-Path $ScriptRoot '01-tenant-context.ps1';            ExtraArgs = @{} }
+        @{ Number = '02'; Name = 'inventory';                Script = Join-Path $ScriptRoot '02-inventory.ps1';                  ExtraArgs = @{} }
+        @{ Number = '03'; Name = 'credential-hygiene';       Script = Join-Path $ScriptRoot '03-credential-hygiene.ps1';         ExtraArgs = @{} }
+        @{ Number = '04'; Name = 'federated-credentials';    Script = Join-Path $ScriptRoot '04-federated-credentials.ps1';      ExtraArgs = @{} }
+        @{ Number = '05'; Name = 'permission-surface';       Script = Join-Path $ScriptRoot '05-permission-surface.ps1';         ExtraArgs = @{} }
+        @{ Number = '06'; Name = 'stale-and-orphaned';       Script = Join-Path $ScriptRoot '06-stale-and-orphaned.ps1';         ExtraArgs = @{} }
+        @{ Number = '07'; Name = 'monitoring-coverage';      Script = Join-Path $ScriptRoot '07-monitoring-coverage.ps1';        ExtraArgs = @{} }
+        @{ Number = '08'; Name = 'ca-for-workload-identities'; Script = Join-Path $ScriptRoot '08-ca-for-workload-identities.ps1'; ExtraArgs = @{ InventoryOutputDir = $OutputDir } }
     )
 
     $runResults = [System.Collections.Generic.List[hashtable]]::new()
     $overallSw  = [System.Diagnostics.Stopwatch]::StartNew()
 
     foreach ($s in $scripts) {
-        $result = Invoke-AssessmentScript -Number $s.Number -Name $s.Name -ScriptPath $s.Script -ExtraArgs $s.ExtraArgs
+        if (-not $includeAzure -and $s.Number -eq '07') {
+            Write-Host '  [NOT COLLECTED] 07-monitoring-coverage - requires Azure access.' -ForegroundColor Gray
+            $result = @{ Number = '07'; Name = $s.Name; Status = 'Not collected'; ExitCode = 0; Duration = 0 }
+        } else {
+            if (-not $includeAzure -and $s.Number -in @('01', '02', '04', '05')) {
+                $s.ExtraArgs.EntraOnly = $true
+            }
+            $result = Invoke-AssessmentScript -Number $s.Number -Name $s.Name -ScriptPath $s.Script -ExtraArgs $s.ExtraArgs
+        }
         $runResults.Add($result)
     }
 
@@ -599,13 +713,80 @@ function Invoke-RunAll {
 
     # Read all output and build consolidated summary
     $metrics = Read-ScriptSummary -OutputDir $OutputDir
+    $metrics.AssessmentScope = $AssessmentScope
+    if (-not $includeAzure) {
+        foreach ($key in @('SubscriptionCount', 'UAMICount', 'SAMICount', 'FICsOnMIs', 'SubOwners', 'SubContributors',
+            'UAAssignments', 'MgmtGroupRBAC', 'DiagSettingsCount', 'SPSignInLogsRouted', 'AuditLogsRouted',
+            'SentinelDeployed', 'KVCount', 'KVWithRBAC', 'KVLegacyPolicy', 'KVNoPurgeProtect')) {
+            $metrics[$key] = 'Not collected'
+        }
+    }
     Write-ConsolidatedSummary -Summary $metrics -ScriptResults $runResults -OutputDir $OutputDir -TotalDuration ([int]$overallSw.Elapsed.TotalSeconds)
+
+    $failed = @($runResults | Where-Object { $_.Status -in @('Failed', 'Missing') })
+    if ($failed.Count -gt 0) {
+        Write-Warning "$($failed.Count) collector(s) failed or are missing. This is a partial assessment; inspect run-summary.json."
+    }
+    $datasets = @(Get-ChildItem -LiteralPath $OutputDir -File | Where-Object Name -match '^0[1-8]-.*\.json$')
+    if ($datasets.Count -eq 0) {
+        Write-Warning 'No collector JSON was produced. No HTML report was generated.'
+        return
+    }
+    $reportPath = Join-Path $OutputDir 'report.html'
+    & (Join-Path $ScriptRoot '09-html-report.ps1') -OutputDir $OutputDir -ReportPath $reportPath
+    if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) {
+        throw "Report generation did not produce $reportPath."
+    }
+    if (-not $NoOpen -and (Get-MgContext).AuthType -eq 'Delegated') {
+        try {
+            Invoke-Item -LiteralPath (Resolve-Path -LiteralPath $reportPath).Path -ErrorAction Stop
+        } catch {
+            Write-Warning "The report was generated at $reportPath but could not be opened: $_"
+        }
+    }
 }
 
 # ─── Entry point ─────────────────────────────────────────────────────────────
+$previousSubscriptionScope = $env:ASSESSMENT_SUBSCRIPTION_IDS
+$runError = $null
+$transcriptStarted = $false
 try {
-    Invoke-RunAll -OutputDir $OutputDir -SubscriptionIds $SubscriptionIds -Skip $Skip
-} catch {
-    Write-Error "run-all.ps1 failed: $_"
-    exit 1
+    if (-not (Test-Path -LiteralPath $OutputDir)) {
+        New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
+    }
+    Start-Transcript -Path (Join-Path $OutputDir 'transcript.txt') -Append -ErrorAction Stop | Out-Null
+    $transcriptStarted = $true
+    try {
+        Invoke-RunAll -OutputDir $OutputDir -SubscriptionIds $SubscriptionIds -Skip $Skip -TenantId $TenantId -UseExistingContext:$UseExistingContext -NoOpen:$NoOpen -AssessmentScope $AssessmentScope
+    } catch {
+        $runError = $_
+    } finally {
+        Stop-AssessmentCollection
+        $env:ASSESSMENT_SUBSCRIPTION_IDS = $previousSubscriptionScope
+        try {
+            Disconnect-AssessmentContexts
+        } catch {
+            if ($runError) {
+                Write-Warning "Authentication cleanup also failed: $_" -WarningAction Continue
+            } else {
+                $runError = $_
+            }
+        }
+    }
+    if ($runError) {
+        Write-Error "run-all.ps1 failed: $runError"
+        exit 1
+    }
+} finally {
+    if ($transcriptStarted) {
+        try {
+            Stop-Transcript -ErrorAction Stop | Out-Null
+        } catch {
+            if ($runError) {
+                Write-Warning "Transcript cleanup also failed: $_" -WarningAction Continue
+            } else {
+                throw
+            }
+        }
+    }
 }

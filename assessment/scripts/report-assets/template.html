@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Workload Identity Assessment</title>
+  <style>__STYLES__</style>
+</head>
+<body>
+  <header>
+    <div class="header-line">
+      <h1>Workload Identity Assessment</h1>
+      <span class="badge">Offline snapshot</span>
+    </div>
+    <div class="meta" id="tenant-meta"></div>
+    <div class="gsearch">
+      <label class="sr-only" for="global-search">Search identities and findings</label>
+      <input id="global-search" type="search" autocomplete="off" placeholder="Search identities, object IDs, application IDs, findings...">
+      <div id="global-results" class="gresults" aria-label="Search results" hidden></div>
+    </div>
+    <p class="disclaimer">Read-only report. All assets and exported data are embedded; no network connection is required. Contains tenant configuration and identifiers. Handle as sensitive assessment data.</p>
+  </header>
+  <nav class="tabs" role="tablist" aria-label="Assessment views">
+    <button id="tab-overview" role="tab" aria-controls="overview" aria-selected="true" data-tab="overview">Overview</button>
+    <button id="tab-inventory" role="tab" aria-controls="inventory" aria-selected="false" data-tab="inventory" tabindex="-1">Identities</button>
+    <button id="tab-findings" role="tab" aria-controls="findings" aria-selected="false" data-tab="findings" tabindex="-1">Findings</button>
+    <button id="tab-controls" role="tab" aria-controls="controls" aria-selected="false" data-tab="controls" tabindex="-1">Control coverage</button>
+    <button id="tab-credentials" role="tab" aria-controls="credentials" aria-selected="false" data-tab="credentials" tabindex="-1">Credentials</button>
+    <button id="tab-fic" role="tab" aria-controls="fic" aria-selected="false" data-tab="fic" tabindex="-1">Federation</button>
+    <button id="tab-permissions" role="tab" aria-controls="permissions" aria-selected="false" data-tab="permissions" tabindex="-1">Permissions</button>
+    <button id="tab-stale" role="tab" aria-controls="stale" aria-selected="false" data-tab="stale" tabindex="-1">Hygiene</button>
+    <button id="tab-monitoring" role="tab" aria-controls="monitoring" aria-selected="false" data-tab="monitoring" tabindex="-1">Monitoring</button>
+    <button id="tab-ca" role="tab" aria-controls="ca" aria-selected="false" data-tab="ca" tabindex="-1">Conditional Access</button>
+    <button id="tab-tenant" role="tab" aria-controls="tenant" aria-selected="false" data-tab="tenant" tabindex="-1">Tenant</button>
+    <button id="tab-raw" role="tab" aria-controls="raw" aria-selected="false" data-tab="raw" tabindex="-1">Raw data</button>
+  </nav>
+  <main>
+    <noscript><p class="notice">JavaScript is required for navigation, search and tables. Open this file in a browser with JavaScript enabled.</p></noscript>
+    <section id="overview" class="view" role="tabpanel" aria-labelledby="tab-overview">
+      <h2>Overview</h2>
+      <div class="cards" id="overview-cards"></div>
+      <div class="overview-grid">
+        <div class="panel">
+          <h3>Findings by severity</h3>
+          <div id="severity-summary"></div>
+          <p class="muted">Source-backed control observations and review candidates. A zero finding count is not evidence of complete coverage.</p>
+        </div>
+        <div class="panel">
+          <h3>Snapshot</h3>
+          <dl class="properties" id="snapshot-meta"></dl>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>Data availability</h3>
+        <p class="muted">Loaded means the export was readable and contained the required report fields, not that every collection operation succeeded. Legacy exports may not record collection status or reasons for missing data.</p>
+        <div class="table-scroll" id="source-table"></div>
+      </div>
+    </section>
+    __PANELS__
+  </main>
+  <dialog id="technical-panel" aria-labelledby="technical-title">
+    <div class="drawer-heading"><h2 id="technical-title">Technical details</h2><button id="technical-close" type="button">Close</button></div>
+    <div id="technical-content"></div>
+  </dialog>
+  <footer>Workload Identity Assessment &middot; PowerShell collection / self-contained HTML</footer>
+  <script id="report-data" type="application/json">__DATA_JSON__</script>
+  <script>__APP_JS__</script>
+</body>
+</html>

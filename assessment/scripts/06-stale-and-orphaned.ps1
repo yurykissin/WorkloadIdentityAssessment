@@ -40,9 +40,10 @@ param(
 
 Set-StrictMode -Version 1.0
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'Assessment.Common.psm1') -ErrorAction Stop
 
 # ─── Module prerequisite check ────────────────────────────────────────────────
-$requiredModules = @('Microsoft.Graph.Authentication', 'Microsoft.Graph.Applications', 'Microsoft.Graph.Reports', 'Az.Accounts', 'Az.ResourceGraph')
+$requiredModules = @('Microsoft.Graph.Authentication', 'Microsoft.Graph.Applications', 'Microsoft.Graph.Reports')
 $missingModules = @($requiredModules | Where-Object { -not (Get-Module -ListAvailable -Name $_) })
 if ($missingModules.Count -gt 0) {
     Write-Host ""
@@ -93,6 +94,7 @@ function Invoke-WithRetry {
 }
 
 function Assert-GraphContext {
+    Assert-AssessmentContexts
     $required = @('Application.Read.All', 'Directory.Read.All')
     $ctx = Get-MgContext
     if ($null -eq $ctx) {
@@ -108,10 +110,10 @@ function Assert-GraphContext {
         Write-Host "  Reconnect with all required scopes for this script:" -ForegroundColor Yellow
         Write-Host ""
         Write-Host "    Disconnect-MgGraph -ErrorAction SilentlyContinue" -ForegroundColor Cyan
-        Write-Host "    Connect-MgGraph -Scopes $allRequired" -ForegroundColor Cyan
+        Write-Host "    Connect-MgGraph -TenantId '<assessment-tenant-id>' -Scopes $allRequired" -ForegroundColor Cyan
         Write-Host ""
         Write-Host "  TIP: To cover all 10 toolkit scripts in one connect, use:" -ForegroundColor Yellow
-        Write-Host "    Connect-MgGraph -Scopes Application.Read.All,Directory.Read.All,Policy.Read.All,RoleManagement.Read.Directory,AuditLog.Read.All,IdentityRiskEvent.Read.All,CrossTenantInformation.ReadBasic.All" -ForegroundColor Cyan
+        Write-Host "    Connect-MgGraph -TenantId '<assessment-tenant-id>' -Scopes Application.Read.All,Directory.Read.All,Policy.Read.All,RoleManagement.Read.Directory,AuditLog.Read.All,IdentityRiskEvent.Read.All,CrossTenantInformation.ReadBasic.All" -ForegroundColor Cyan
         Write-Host ""
         Write-Error "Missing Graph scopes: $($missing -join ', ')"
         exit 2
@@ -139,9 +141,7 @@ function Test-UserExists {
             $UserExistenceCache[$UserId] = $false
             return $false
         }
-        # Other error — assume exists to avoid false positives
-        $UserExistenceCache[$UserId] = $true
-        return $true
+        throw
     }
 }
 
@@ -168,23 +168,13 @@ function Invoke-StaleAndOrphaned {
     $signInMap = @{}
     $signInAvailable = $false
     try {
-        $activities = Invoke-WithRetry {
-            Get-MgBetaReportServicePrincipalSignInActivity -All -ErrorAction Stop
-        }
+        $activityEvidence = Get-AssessmentSignInActivity
+        if ($activityEvidence.State -ne 'Available') { throw $activityEvidence.Message }
+        $activities = @($activityEvidence.Records)
         $signInAvailable = $true
         foreach ($a in $activities) {
-            $candidates = @(
-                $a.LastSignInActivity.LastSignInDateTime
-                $a.DelegatedClientSignInActivity.LastSignInDateTime
-                $a.ApplicationAuthenticationClientSignInActivity.LastSignInDateTime
-                $a.ManagedIdentitySignInActivity.LastSignInDateTime
-            ) | Where-Object { $null -ne $_ }
-
-            $lastSignIn = $null
-            if ($candidates.Count -gt 0) {
-                $lastSignIn = $candidates | Sort-Object -Descending | Select-Object -First 1
-            }
-            $signInMap[$a.AppId] = $lastSignIn
+            $summary = Get-AssessmentActivitySummary $a
+            if ($a.AppId) { $signInMap[$a.AppId] = $summary.LastSignIn }
         }
         Write-Host " $($activities.Count) records loaded." -ForegroundColor Green
     } catch {
@@ -199,27 +189,23 @@ function Invoke-StaleAndOrphaned {
     Write-Host "  Fetching app registrations for tag/owner context..." -NoNewline
     $appsByAppId = @{}
     try {
-        $allApps = Invoke-WithRetry {
-            Get-MgApplication -All -Property 'id,appId,tags,displayName' -ErrorAction Stop
-        }
+        $allApps = @(Get-AssessmentDirectoryData -Resource applications -Relationship owners)
         foreach ($app in $allApps) {
             $appsByAppId[$app.AppId] = $app
         }
         Write-Host " $($allApps.Count) app registrations indexed." -ForegroundColor Green
     } catch {
-        Write-Host " failed: $_" -ForegroundColor Yellow
+        throw "App registration metadata is unavailable; hygiene cannot be evaluated: $_"
     }
 
     # ── 3. Service principals (Application type, first-party only) ────────────
     Write-Host "  Fetching service principals..." -NoNewline
-    $allSps = Invoke-WithRetry {
-        Get-MgServicePrincipal -All -Property 'id,appId,displayName,servicePrincipalType,appOwnerOrganizationId,accountEnabled' -ErrorAction Stop
-    }
+    $allSps = @(Get-AssessmentDirectoryData -Resource servicePrincipals -Relationship owners)
 
     # Filter: Application type, owned by this tenant (not external SaaS)
     $firstPartySps = @($allSps | Where-Object {
         $_.ServicePrincipalType -eq 'Application' -and
-        ($null -eq $_.AppOwnerOrganizationId -or $_.AppOwnerOrganizationId -eq $tenantId)
+        $_.AppOwnerOrganizationId -eq $tenantId
     })
     Write-Host " $($firstPartySps.Count) first-party Application SPs." -ForegroundColor Green
 
@@ -231,33 +217,31 @@ function Invoke-StaleAndOrphaned {
     $i = 0
     foreach ($sp in $firstPartySps) {
         $i++
-        if ($firstPartySps.Count -gt 50) {
+        if ($firstPartySps.Count -gt 50 -and ($i -eq 1 -or $i % 250 -eq 0)) {
             Write-Progress -Activity 'Analysing SPs for staleness/orphan status' -Status "$i / $($firstPartySps.Count): $($sp.DisplayName)" -PercentComplete (($i / $firstPartySps.Count) * 100)
         }
 
         # Sign-in staleness
         $lastSignIn = $null
         $daysSince  = $null
-        $neverSignedIn = $true
+        $neverSignedIn = $null
 
-        if ($signInAvailable -and $signInMap.ContainsKey($sp.AppId) -and $null -ne $signInMap[$sp.AppId]) {
+        if ($signInAvailable -and $sp.AppId -and $signInMap.ContainsKey($sp.AppId) -and $null -ne $signInMap[$sp.AppId]) {
             $lastSignIn = [datetime]$signInMap[$sp.AppId]
             $daysSince  = [int]($today - $lastSignIn.ToUniversalTime()).TotalDays
             $neverSignedIn = $false
         }
 
-        $stale90  = ($neverSignedIn -or ($daysSince -ne $null -and $daysSince -ge 90))
-        $stale365 = ($neverSignedIn -or ($daysSince -ne $null -and $daysSince -ge 365))
+        $stale90  = if ($null -ne $daysSince) { $daysSince -ge 90 } else { $null }
+        $stale365 = if ($null -ne $daysSince) { $daysSince -ge 365 } else { $null }
 
         # Owner resolution
-        $ownerCount    = 0
+        $ownerCount    = $null
         $ownerCategory = 'ok'
         $ownerIds      = @()
 
         try {
-            $owners = Invoke-WithRetry {
-                Get-MgServicePrincipalOwner -ServicePrincipalId $sp.Id -All -ErrorAction Stop
-            }
+            $owners = @($sp.owners)
             $ownerCount = $owners.Count
             $ownerIds   = @($owners | ForEach-Object { $_.Id })
 
@@ -265,7 +249,7 @@ function Invoke-StaleAndOrphaned {
                 $ownerCategory = 'noOwner'
             } elseif ($ownerCount -eq 1) {
                 # Check if the single owner exists
-                $ownerType = $owners[0].AdditionalProperties.'@odata.type'
+                $ownerType = $owners[0].'@odata.type'
                 if ($ownerType -match '#microsoft.graph.user') {
                     $exists = Test-UserExists -UserId $owners[0].Id -UserExistenceCache $userExistenceCache
                     $ownerCategory = if ($exists) { 'singleOwner' } else { 'orphanedOwner' }
@@ -276,7 +260,7 @@ function Invoke-StaleAndOrphaned {
                 # Check if ALL user owners are still in directory
                 $allOwnersOrphaned = $true
                 foreach ($owner in $owners) {
-                    $ownerType = $owner.AdditionalProperties.'@odata.type'
+                    $ownerType = $owner.'@odata.type'
                     if ($ownerType -match '#microsoft.graph.user') {
                         $exists = Test-UserExists -UserId $owner.Id -UserExistenceCache $userExistenceCache
                         if ($exists) { $allOwnersOrphaned = $false; break }
@@ -287,13 +271,13 @@ function Invoke-StaleAndOrphaned {
                 $ownerCategory = if ($allOwnersOrphaned) { 'orphanedOwner' } else { 'ok' }
             }
         } catch {
-            Write-Verbose "Could not get owners for SP $($sp.Id): $_"
+            Write-Warning "Could not resolve owners for SP $($sp.Id): $_"
             $ownerCategory = 'unknown'
         }
 
         # App reg context
         $appRegHasTags = $false
-        if ($appsByAppId.ContainsKey($sp.AppId)) {
+        if ($sp.AppId -and $appsByAppId.ContainsKey($sp.AppId)) {
             $appRegHasTags = ($appsByAppId[$sp.AppId].Tags.Count -gt 0)
         }
 
@@ -326,9 +310,9 @@ function Invoke-StaleAndOrphaned {
     }
 
     # ── Write JSON ────────────────────────────────────────────────────────────
-    $stale90Count   = @($rows | Where-Object { $_.Stale90Days  }).Count
-    $stale365Count  = @($rows | Where-Object { $_.Stale365Days }).Count
-    $neverCount     = @($rows | Where-Object { $_.NeverSignedIn }).Count
+    $stale90Count   = if ($signInAvailable) { @($rows | Where-Object { $_.Stale90Days  }).Count } else { $null }
+    $stale365Count  = if ($signInAvailable) { @($rows | Where-Object { $_.Stale365Days }).Count } else { $null }
+    $neverCount     = $null
     $noOwnerCount   = @($rows | Where-Object { $_.OwnerCategory -eq 'noOwner' }).Count
     $orphanedCount  = @($rows | Where-Object { $_.OwnerCategory -eq 'orphanedOwner' }).Count
     $singleOwnerCount = @($rows | Where-Object { $_.OwnerCategory -eq 'singleOwner' }).Count
@@ -347,7 +331,7 @@ function Invoke-StaleAndOrphaned {
             SingleOwner               = $singleOwnerCount
             AppRegMissingTags         = $noTagsCount
         }
-        ServicePrincipals   = @($rows)
+        ServicePrincipals   = $rows.ToArray()
     }
     $jsonPath = Join-Path $OutputDir '06-stale-and-orphaned.json'
     $jsonResult | ConvertTo-Json -Depth 6 | Out-File -FilePath $jsonPath -Encoding UTF8
@@ -361,11 +345,15 @@ function Invoke-StaleAndOrphaned {
     Write-Host "  Sign-in data available               : $signInAvailable"
     Write-Host ""
     Write-Host "  Staleness (sign-in activity):" -ForegroundColor White
-    $s90Color = if ($stale90Count -gt 0) { 'Yellow' } else { 'Green' }
-    $s365Color = if ($stale365Count -gt 0) { 'Red' } else { 'Green' }
-    Write-Host "    No sign-in in 90+ days   : $stale90Count"  -ForegroundColor $s90Color
-    Write-Host "    No sign-in in 365+ days  : $stale365Count" -ForegroundColor $s365Color
-    Write-Host "    Never signed in          : $neverCount"
+    if ($signInAvailable) {
+        $s90Color = if ($stale90Count -gt 0) { 'Yellow' } else { 'Green' }
+        $s365Color = if ($stale365Count -gt 0) { 'Red' } else { 'Green' }
+        Write-Host "    No sign-in in 90+ days   : $stale90Count"  -ForegroundColor $s90Color
+        Write-Host "    No sign-in in 365+ days  : $stale365Count" -ForegroundColor $s365Color
+        Write-Host "    Never signed in          : $neverCount"
+    } else {
+        Write-Host "    Unavailable — not evaluated." -ForegroundColor Yellow
+    }
     Write-Host ""
     Write-Host "  Ownership:" -ForegroundColor White
     $noOwColor = if ($noOwnerCount -gt 0) { 'Red'    } else { 'Green' }

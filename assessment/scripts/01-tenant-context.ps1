@@ -31,6 +31,9 @@
       <OutputDir>/01-tenant-context.json
       <OutputDir>/01-tenant-context.csv
 
+.PARAMETER EntraOnly
+    Collect Entra tenant context without Azure modules, authentication or subscription discovery.
+
 .EXAMPLE
     ./scripts/01-tenant-context.ps1 -OutputDir ./output/20260101-120000
 #>
@@ -38,14 +41,17 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [string]$OutputDir = (Join-Path (Split-Path -Parent $PSScriptRoot) ('output/' + (Get-Date -Format 'yyyyMMdd-HHmmss')))
+    [string]$OutputDir = (Join-Path (Split-Path -Parent $PSScriptRoot) ('output/' + (Get-Date -Format 'yyyyMMdd-HHmmss'))),
+    [switch]$EntraOnly
 )
 
 Set-StrictMode -Version 1.0
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'Assessment.Common.psm1') -ErrorAction Stop
 
 # ─── Module prerequisite check ────────────────────────────────────────────────
 $requiredModules = @('Microsoft.Graph.Authentication', 'Microsoft.Graph.Identity.DirectoryManagement', 'Microsoft.Graph.Identity.SignIns', 'Microsoft.Graph.Identity.Governance', 'Az.Accounts', 'Az.Resources')
+if ($EntraOnly) { $requiredModules = @($requiredModules | Where-Object { $_ -notlike 'Az.*' }) }
 $missingModules = @($requiredModules | Where-Object { -not (Get-Module -ListAvailable -Name $_) })
 if ($missingModules.Count -gt 0) {
     Write-Host ""
@@ -125,6 +131,7 @@ function Invoke-WithRetry {
 }
 
 function Assert-GraphContext {
+    Assert-AssessmentContexts -RequireAzure:(-not $EntraOnly)
     try {
         $required = @('Directory.Read.All', 'Policy.Read.All', 'RoleManagement.Read.Directory')
         $ctx = Get-MgContext
@@ -134,10 +141,10 @@ function Assert-GraphContext {
             Write-Host ""
             Write-Host "  Connect with the required scopes for this script:" -ForegroundColor Yellow
             Write-Host ""
-            Write-Host "    Connect-MgGraph -Scopes $($required -join ',')" -ForegroundColor Cyan
+            Write-Host "    Connect-MgGraph -TenantId '<assessment-tenant-id>' -Scopes $($required -join ',')" -ForegroundColor Cyan
             Write-Host ""
             Write-Host "  TIP: To cover all 10 toolkit scripts in one connect, use:" -ForegroundColor Yellow
-            Write-Host "    Connect-MgGraph -Scopes Application.Read.All,Directory.Read.All,Policy.Read.All,RoleManagement.Read.Directory,AuditLog.Read.All,IdentityRiskEvent.Read.All,CrossTenantInformation.ReadBasic.All" -ForegroundColor Cyan
+            Write-Host "    Connect-MgGraph -TenantId '<assessment-tenant-id>' -Scopes Application.Read.All,Directory.Read.All,Policy.Read.All,RoleManagement.Read.Directory,AuditLog.Read.All,IdentityRiskEvent.Read.All,CrossTenantInformation.ReadBasic.All" -ForegroundColor Cyan
             Write-Host ""
             Write-Error "Not connected to Microsoft Graph"
             exit 2
@@ -151,10 +158,10 @@ function Assert-GraphContext {
             Write-Host "  Reconnect with all required scopes for this script:" -ForegroundColor Yellow
             Write-Host ""
             Write-Host "    Disconnect-MgGraph -ErrorAction SilentlyContinue" -ForegroundColor Cyan
-            Write-Host "    Connect-MgGraph -Scopes $allRequired" -ForegroundColor Cyan
+            Write-Host "    Connect-MgGraph -TenantId '<assessment-tenant-id>' -Scopes $allRequired" -ForegroundColor Cyan
             Write-Host ""
             Write-Host "  TIP: To cover all 10 toolkit scripts in one connect, use:" -ForegroundColor Yellow
-            Write-Host "    Connect-MgGraph -Scopes Application.Read.All,Directory.Read.All,Policy.Read.All,RoleManagement.Read.Directory,AuditLog.Read.All,IdentityRiskEvent.Read.All,CrossTenantInformation.ReadBasic.All" -ForegroundColor Cyan
+            Write-Host "    Connect-MgGraph -TenantId '<assessment-tenant-id>' -Scopes Application.Read.All,Directory.Read.All,Policy.Read.All,RoleManagement.Read.Directory,AuditLog.Read.All,IdentityRiskEvent.Read.All,CrossTenantInformation.ReadBasic.All" -ForegroundColor Cyan
             Write-Host ""
             Write-Error "Missing Graph scopes: $($missing -join ', ')"
             exit 2
@@ -323,6 +330,7 @@ function Invoke-TenantContext {
             NotifyReviewers = $consentPolicy.NotifyReviewers
             RemindersEnabled = $consentPolicy.RemindersEnabled
             RequestDurationInDays = $consentPolicy.RequestDurationInDays
+            Reviewers = @($consentPolicy.Reviewers)
         }
     } else {
         @{ Error = 'CouldNotFetch' }
@@ -387,16 +395,20 @@ function Invoke-TenantContext {
     Write-Host " done." -ForegroundColor Green
 
     # ── 8. Azure subscriptions ────────────────────────────────────────────────
-    Write-Host "  Fetching Azure subscriptions..." -NoNewline
     $subscriptions = @()
-    try {
-        $subscriptions = @(Invoke-WithRetry {
-            Get-AzSubscription -ErrorAction Stop |
-                Select-Object Name, Id, TenantId, State
-        })
-        Write-Host " $($subscriptions.Count) subscription(s) found." -ForegroundColor Green
-    } catch {
-        Write-Warning "Could not enumerate Azure subscriptions: $_"
+    if ($EntraOnly) {
+        Write-Host '  Azure subscriptions: not collected (Entra only).' -ForegroundColor Gray
+    } else {
+        Write-Host "  Fetching Azure subscriptions..." -NoNewline
+        try {
+            $subscriptions = @(Invoke-WithRetry {
+                Get-AzSubscription -TenantId (Get-MgContext).TenantId -DefaultProfile (Get-AzContext) -ErrorAction Stop |
+                    Select-Object Name, Id, TenantId, State
+            })
+            Write-Host " $($subscriptions.Count) subscription(s) found." -ForegroundColor Green
+        } catch {
+            Write-Warning "Could not enumerate Azure subscriptions: $_"
+        }
     }
 
     # ── 9. Custom Entra roles ─────────────────────────────────────────────────
@@ -415,6 +427,7 @@ function Invoke-TenantContext {
     # ── Assemble result ───────────────────────────────────────────────────────
     $result = @{
         CollectedAt           = (Get-Date -Format 'o')
+        AzureCollected        = -not $EntraOnly
         TenantInfo            = $tenantInfo
         LicenseFlags          = $licenseFlags
         AllLicenses           = $licenseInventory
@@ -423,9 +436,9 @@ function Invoke-TenantContext {
         CrossTenantAccessDefault = $crossTenantResult
         IdentityProtection    = $ipResult
         RoleMemberCounts      = $roleResults
-        AzureSubscriptions    = @($subscriptions | ForEach-Object {
+        AzureSubscriptions    = if ($EntraOnly) { $null } else { ,@($subscriptions | ForEach-Object {
             @{ Name = $_.Name; Id = $_.Id; TenantId = $_.TenantId; State = $_.State }
-        })
+        }) }
         CustomEntraRoles      = @($customRoles | ForEach-Object {
             @{ Id = $_.Id; DisplayName = $_.DisplayName; Description = $_.Description; IsEnabled = $_.IsEnabled; CreatedDateTime = $_.CreatedDateTime }
         })
@@ -464,7 +477,8 @@ function Invoke-TenantContext {
         $csvRows.Add([PSCustomObject]@{ Key = "RoleMemberCount_$roleName"; Value = $roleResults[$roleName].MemberCount })
     }
 
-    $csvRows.Add([PSCustomObject]@{ Key = 'AzureSubscriptionCount';       Value = $subscriptions.Count })
+    $subscriptionCount = if ($EntraOnly) { 'Not collected' } else { $subscriptions.Count }
+    $csvRows.Add([PSCustomObject]@{ Key = 'AzureSubscriptionCount';       Value = $subscriptionCount })
     $csvRows.Add([PSCustomObject]@{ Key = 'CustomEntraRoleCount';          Value = $customRoles.Count })
     $csvRows.Add([PSCustomObject]@{ Key = 'IdentityProtectionEnabled';     Value = $ipResult.Enabled })
     $csvRows.Add([PSCustomObject]@{ Key = 'RiskyServicePrincipalCount';    Value = $ipResult.RiskyServicePrincipalCount })
@@ -513,7 +527,7 @@ function Invoke-TenantContext {
     Write-Host ""
     Write-Host "  Identity Protection (WI) : $($ipResult.Enabled) | Risky SPs: $($ipResult.RiskyServicePrincipalCount)"
     Write-Host "  Custom Entra Roles       : $($customRoles.Count)"
-    Write-Host "  Azure Subscriptions      : $($subscriptions.Count)"
+    Write-Host "  Azure Subscriptions      : $subscriptionCount"
     Write-Host ""
     Write-Host "  Output: $jsonPath"
     Write-Host "          $csvPath"

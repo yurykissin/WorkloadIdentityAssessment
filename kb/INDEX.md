@@ -153,6 +153,15 @@ _Auto-generated. Re-run `scripts/build-index.py` after editing KB._
 | H2 | Frequently Approved vs Rarely Approved Exceptions | `kb/02-governance/06-exception-process.md:124` |
 | H2 | Related Governance Documents | `kb/02-governance/06-exception-process.md:139` |
 | H2 | References | `kb/02-governance/06-exception-process.md:150` |
+| H1 | Managed Identity Provisioning Controls | `kb/02-governance/07-managed-identity-provisioning-controls.md:1` |
+| H2 | Quick Answers | `kb/02-governance/07-managed-identity-provisioning-controls.md:16` |
+| H2 | System-Assigned MI — Default State and Enforcement | `kb/02-governance/07-managed-identity-provisioning-controls.md:29` |
+| H2 | User-Assigned MI — Who Can Create and Attach | `kb/02-governance/07-managed-identity-provisioning-controls.md:45` |
+| H2 | Azure Arc Resources | `kb/02-governance/07-managed-identity-provisioning-controls.md:67` |
+| H2 | Where to Manage vs. Observe | `kb/02-governance/07-managed-identity-provisioning-controls.md:77` |
+| H2 | Reports and Insights for Managed Identities | `kb/02-governance/07-managed-identity-provisioning-controls.md:93` |
+| H2 | See Also | `kb/02-governance/07-managed-identity-provisioning-controls.md:111` |
+| H2 | References | `kb/02-governance/07-managed-identity-provisioning-controls.md:120` |
 
 ## 03-management
 

@@ -27,13 +27,16 @@ modifying tenant state.
    policy baseline; `kb/03-management/` to set up operations.
 2. **Run the assessment** — produces evidence-based findings against your
    actual tenant. Two ways:
-   - **Local:** `pwsh assessment/scripts/run-all.ps1` (after
-     `Connect-MgGraph` + `Connect-AzAccount`)
+   - **Local:** run `assessment/scripts/run-all.ps1`. Choose **Entra only**
+     (Graph sign-in) or **Entra + Azure** (adds Azure resources and sign-in).
+     It handles tenant alignment, collection, and generating/opening the HTML
+     report. See the [quick start and offline-render commands](assessment/README.md#quick-start-local).
    - **One-click in Azure:** ARM template + Deployment Script —
      see [`assessment/deploy/`](assessment/deploy/) for the link and
      prerequisites.
-3. **Walk the HTML report** with stakeholders. Map each finding back to the
-   relevant KB article (the report links to recommended sections).
+3. **Walk the HTML report** with stakeholders. Each finding links its Microsoft
+   or pinned SCuBA source and affected objects; Control coverage exposes manual
+   and unavailable evidence instead of implying complete compliance.
 4. **Remediate** — apply the policies the findings + KB articles call for.
    The [`remediation/`](remediation/) folder ships PowerShell helpers for
    the most common controls (app management policies today; more coming).
@@ -45,32 +48,52 @@ modifying tenant state.
 The `assessment/scripts/09-html-report.ps1` script consolidates the JSON
 output of all earlier scripts into a single self-contained HTML file with:
 
-- Tenant context tile + license capability matrix
+- CAPVisualizer-style dark panels, compact tabs and overview cards
+- Searchable application, service-principal and managed-identity inventory
+  with ID-based related records
+- Tenant context and license capability matrix
 - 4-tier findings (HIGH / MED / LOW / INFO) with explicit recommendations
-- Drill-down tables for inventory, credentials, FICs, permissions, stale
-  identities, monitoring coverage, Conditional Access targeting
-- Raw JSON appendix per script run
+- Searchable, sortable, paged tables for credentials, FICs, permissions,
+  stale identities, monitoring coverage and Conditional Access targeting
+- Explicit loaded / missing / partial / unreadable source states
+- Complete raw JSON for one selected snapshot
+
+Collection remains PowerShell-based. Rendering is local and offline; the
+result is one HTML file, with no backend or external runtime assets. Existing
+exports remain backward-compatible. The versioned workload control catalog
+separates severity from Pass/Fail/Review/unassessed outcomes. Identity-origin,
+audience and ownership filters default to tenant-managed applications; readable
+API permissions and a technical side panel keep IDs out of the main view.
+See [evidence and capability limits](assessment/README.md#controls-sources-and-evidence-limits)
+before interpreting findings or older snapshots.
 
 > Screenshots below were rendered against synthetic data — no real tenant
 > identifiers are present in this repository.
 
-### Header + navigation
+### Overview + navigation
 ![Header](assessment/docs/screenshots/01-header-and-nav.png)
 
 ### Findings — high severity
 ![High findings](assessment/docs/screenshots/02-findings-high.png)
 
-### Findings — medium / low / info
+### Findings — medium severity
 ![Med/low/info findings](assessment/docs/screenshots/03-findings-med-low-info.png)
 
 ### Tenant context (license capabilities, role member counts)
 ![Tenant context](assessment/docs/screenshots/04-tenant-context.png)
 
-### Inventory (managed identities, app registrations, in-tenant SPs)
+### Identities (search, type filters and selected-object details)
 ![Inventory](assessment/docs/screenshots/05-inventory.png)
 
-### Credential hygiene + federated credentials
-![Credentials and FICs](assessment/docs/screenshots/06-credentials-fic.png)
+### Credential hygiene
+![Credentials](assessment/docs/screenshots/06-credentials-fic.png)
+
+<details>
+<summary>Mobile identity view</summary>
+
+![Mobile identities](assessment/docs/screenshots/mobile-identities.png)
+
+</details>
 
 ## Style of the KB content
 

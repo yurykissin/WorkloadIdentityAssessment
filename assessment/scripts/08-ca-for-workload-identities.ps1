@@ -46,6 +46,7 @@ param(
 
 Set-StrictMode -Version 1.0
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'Assessment.Common.psm1') -ErrorAction Stop
 
 # ─── Module prerequisite check ────────────────────────────────────────────────
 $requiredModules = @('Microsoft.Graph.Authentication', 'Microsoft.Graph.Identity.SignIns', 'Microsoft.Graph.Identity.DirectoryManagement')
@@ -222,13 +223,7 @@ function Get-SPCoverage {
 
     if (-not $fromFile -or $sps.Count -eq 0) {
         Write-Host "  Fetching service principals for coverage analysis..." -NoNewline
-        $allSps = Invoke-WithRetry {
-            Get-MgServicePrincipal -All -Property 'id,appId,displayName,servicePrincipalType,appOwnerOrganizationId' -ErrorAction Stop
-        }
-        $sps = @($allSps | Where-Object {
-            $_.ServicePrincipalType -eq 'Application' -and
-            ($null -eq $_.AppOwnerOrganizationId -or $_.AppOwnerOrganizationId -eq $TenantId)
-        })
+        $sps = @(Get-AssessmentDirectoryData -Resource servicePrincipals -Relationship appRoleAssignments)
         Write-Host " $($sps.Count) first-party Application SPs." -ForegroundColor Green
     }
 
@@ -236,33 +231,31 @@ function Get-SPCoverage {
     $enabledWIPolicies = @($WIPolicies | Where-Object { $_.State -eq 'enabled' })
 
     # Collect explicit SP IDs from enabled policies
-    $coveredSpIds = [System.Collections.Generic.HashSet[string]]::new()
-    $usesAllSPsPolicy = $false
-
-    foreach ($policy in $enabledWIPolicies) {
-        $includeSPs = @($policy.IncludeServicePrincipals -split ';' | Where-Object { $_ -ne '' })
-        foreach ($spId in $includeSPs) {
-            if ($spId -eq 'ServicePrincipalsInMyTenant') {
-                $usesAllSPsPolicy = $true
-            } else {
-                $coveredSpIds.Add($spId) | Out-Null
-            }
-        }
-    }
-
     $coverageRows = [System.Collections.Generic.List[PSObject]]::new()
     foreach ($sp in $sps) {
         $spId = if ($sp.PSObject.Properties['SpObjectId']) { $sp.SpObjectId } else { $sp.id }
         $spName = if ($sp.PSObject.Properties['DisplayName']) { $sp.DisplayName } else { $sp.displayName }
         $appId = if ($sp.PSObject.Properties['AppId']) { $sp.AppId } else { $sp.appId }
 
-        $covered = $usesAllSPsPolicy -or $coveredSpIds.Contains($spId)
+        if ($sp.ServicePrincipalType -ne 'Application' -or $sp.AppOwnerOrganizationId -ne $TenantId) { continue }
+        $eligibility = if ($sp.SignInAudience -in @('AzureADMyOrg','single-tenant')) { 'Eligible' } elseif ($sp.SignInAudience) { 'Not applicable' } else { 'Unknown' }
+        $covered = $false
+        $conditional = $false
+        foreach ($policy in $enabledWIPolicies) {
+            $include = @($policy.IncludeServicePrincipals -split ';')
+            $exclude = @($policy.ExcludeServicePrincipals -split ';')
+            if ($spId -in $exclude -or ($spId -notin $include -and 'ServicePrincipalsInMyTenant' -notin $include)) { continue }
+            if ($policy.SpFilterRule) { $conditional = $true; continue }
+            if ($policy.GrantControls -match '\bblock\b') { $covered = $true }
+        }
 
         $coverageRows.Add([PSCustomObject]@{
             SpObjectId            = $spId
             DisplayName           = $spName
             AppId                 = $appId
-            CoveredByAnyCAPolicy  = $covered
+            CoveredByAnyCAPolicy  = if ($eligibility -ne 'Eligible' -or ($conditional -and -not $covered)) { $null } else { $covered }
+            Eligibility           = $eligibility
+            Limitation            = 'Configuration targeting only, not proof of effective enforcement; resource and condition scope require review.'
         })
     }
 
@@ -329,11 +322,13 @@ function Invoke-CAForWorkloadIdentities {
     $reportOnlyCount   = @($wiPolicies | Where-Object { $_.State -eq 'enabledForReportingButNotEnforced' }).Count
     $disabledCount     = @($wiPolicies | Where-Object { $_.State -eq 'disabled' }).Count
     $coveredCount      = @($coverageRows | Where-Object { $_.CoveredByAnyCAPolicy }).Count
-    $totalSPs          = $coverageRows.Count
+    $totalSPs          = @($coverageRows | Where-Object Eligibility -eq 'Eligible').Count
     $coveragePct       = if ($totalSPs -gt 0) { [math]::Round($coveredCount / $totalSPs * 100, 1) } else { 0 }
 
     $jsonResult = @{
         CollectedAt              = (Get-Date -Format 'o')
+        CoverageSchemaVersion    = 2
+        AllPolicyEvidence        = @($allPolicies)
         WorkloadIdentitiesPremiumLicensed = $wiPremiumPresent
         TotalCAPolicies          = $allPolicies.Count
         WITargetedPolicies       = $wiPolicies.Count
@@ -356,7 +351,7 @@ function Invoke-CAForWorkloadIdentities {
     Write-Host "═══════════════════════════════════════════════════════════════" -ForegroundColor Cyan
 
     $licColor = if ($wiPremiumPresent) { 'Green' } else { 'Yellow' }
-    Write-Host "  Workload Identities Premium    : $(if ($wiPremiumPresent) {'Licensed'} else {'NOT licensed — CA enforcement will not work'})" -ForegroundColor $licColor
+    Write-Host "  Workload Identities Premium    : $(if ($wiPremiumPresent) {'License detected'} else {'Not detected; verify prerequisites separately from policy targeting'})" -ForegroundColor $licColor
     Write-Host ""
     Write-Host "  Conditional Access Policies    : $($allPolicies.Count) total"
     $wiColor = if ($wiPolicies.Count -gt 0) { 'Green' } else { 'Yellow' }

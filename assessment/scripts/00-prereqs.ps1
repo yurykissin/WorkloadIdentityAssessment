@@ -7,8 +7,8 @@
     the Graph delegated scopes and Azure roles the assessor must have before
     running assessment scripts 01–08.
 
-    Does NOT call Connect-MgGraph — the assessor runs that interactively to
-    consent the correct scopes.
+    Does NOT call Connect-MgGraph — run-all.ps1 handles interactive sign-in
+    and requests the required scopes.
 
 .EXAMPLE
     ./scripts/00-prereqs.ps1
@@ -289,10 +289,11 @@ function Invoke-PrereqCheck {
 
     # ── 3. Graph scopes ────────────────────────────────────────────────────────
     Write-Host "▶ Required Microsoft Graph Delegated Scopes" -ForegroundColor White
-    Write-Host "  Run this command before executing assessment scripts:" -ForegroundColor Gray
+    Write-Host "  run-all.ps1 requests these scopes during sign-in." -ForegroundColor Gray
+    Write-Host "  For individual collectors or caller-managed authentication:" -ForegroundColor Gray
     Write-Host ""
     $scopeList = $requiredScopes -join '","'
-    Write-Host "  Connect-MgGraph -Scopes `"$scopeList`"" -ForegroundColor Yellow
+    Write-Host "  Connect-MgGraph -TenantId '<assessment-tenant-id>' -Scopes `"$scopeList`"" -ForegroundColor Yellow
     Write-Host ""
     Write-Host "  Individual scopes required:" -ForegroundColor Gray
     foreach ($scope in $requiredScopes) {
@@ -311,9 +312,11 @@ function Invoke-PrereqCheck {
 
     # ── 4. Azure roles ─────────────────────────────────────────────────────────
     Write-Host "▶ Required Azure Roles" -ForegroundColor White
-    Write-Host "  Run this command before executing assessment scripts:" -ForegroundColor Gray
+    Write-Host "  run-all.ps1 handles Azure sign-in and tenant alignment." -ForegroundColor Gray
+    Write-Host "  For individual collectors or caller-managed authentication:" -ForegroundColor Gray
     Write-Host ""
-    Write-Host "  Connect-AzAccount" -ForegroundColor Yellow
+    Write-Host "  Disable-AzContextAutosave -Scope Process | Out-Null" -ForegroundColor Yellow
+    Write-Host "  Connect-AzAccount -Tenant '<assessment-tenant-id>' -Scope Process -SkipContextPopulation" -ForegroundColor Yellow
     Write-Host ""
     Write-Host "  Role assignments required:" -ForegroundColor Gray
     foreach ($role in $requiredAzureRoles) {
@@ -324,19 +327,17 @@ function Invoke-PrereqCheck {
     # ── 5. Typical run instructions ───────────────────────────────────────────
     Write-Host "▶ Typical Run Sequence" -ForegroundColor White
     Write-Host ""
-    Write-Host "  # 1. Connect (interactive — paste into your terminal):" -ForegroundColor Gray
-    Write-Host "  Connect-MgGraph -Scopes `"Application.Read.All`",`"Directory.Read.All`",`"Policy.Read.All`",`"AuditLog.Read.All`",`"IdentityRiskEvent.Read.All`",`"RoleManagement.Read.Directory`",`"CrossTenantInformation.ReadBasic.All`"" -ForegroundColor Yellow
-    Write-Host "  Connect-AzAccount" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "  # 2. Run all assessment scripts:" -ForegroundColor Gray
-    Write-Host "  ./scripts/run-all.ps1 -OutputDir ./output -SubscriptionIds @('sub-id-1','sub-id-2')" -ForegroundColor Yellow
+    Write-Host "  # Sign in, collect, generate and open the report:" -ForegroundColor Gray
+    Write-Host "  ./scripts/run-all.ps1" -ForegroundColor Yellow
+    Write-Host "  # Optional tenant selection:" -ForegroundColor Gray
+    Write-Host "  ./scripts/run-all.ps1 -TenantId '<assessment-tenant-id>'" -ForegroundColor Yellow
     Write-Host ""
 
     # ── 6. Final status ───────────────────────────────────────────────────────
     Write-Host "═══════════════════════════════════════════════════════════════" -ForegroundColor Cyan
     if ($modulesOk) {
         Write-Host "  STATUS: All module prerequisites satisfied." -ForegroundColor Green
-        Write-Host "  Next: Connect-MgGraph + Connect-AzAccount, then run-all.ps1" -ForegroundColor Green
+        Write-Host "  Next: ./scripts/run-all.ps1" -ForegroundColor Green
     } else {
         Write-Host "  STATUS: One or more modules are missing/outdated. Re-run this script." -ForegroundColor Yellow
     }

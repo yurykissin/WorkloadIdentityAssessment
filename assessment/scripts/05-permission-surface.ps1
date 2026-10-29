@@ -25,6 +25,9 @@
       <OutputDir>/05-permission-surface-graph.csv
       <OutputDir>/05-permission-surface-azure-rbac.csv
 
+.PARAMETER EntraOnly
+    Collect directory permissions without Azure modules, authentication or RBAC discovery.
+
 .EXAMPLE
     ./scripts/05-permission-surface.ps1 -OutputDir ./output/20260101-120000
 #>
@@ -32,14 +35,18 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [string]$OutputDir = (Join-Path (Split-Path -Parent $PSScriptRoot) ('output/' + (Get-Date -Format 'yyyyMMdd-HHmmss')))
+    [string]$OutputDir = (Join-Path (Split-Path -Parent $PSScriptRoot) ('output/' + (Get-Date -Format 'yyyyMMdd-HHmmss'))),
+    [switch]$EntraOnly
 )
 
 Set-StrictMode -Version 1.0
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'Assessment.Common.psm1') -ErrorAction Stop
+Import-Module (Join-Path $PSScriptRoot 'Assessment.Controls.psm1') -Force -ErrorAction Stop
 
 # ─── Module prerequisite check ────────────────────────────────────────────────
 $requiredModules = @('Microsoft.Graph.Authentication', 'Microsoft.Graph.Applications', 'Microsoft.Graph.Identity.DirectoryManagement', 'Az.Accounts', 'Az.Resources', 'Az.ResourceGraph')
+if ($EntraOnly) { $requiredModules = @($requiredModules | Where-Object { $_ -notlike 'Az.*' }) }
 $missingModules = @($requiredModules | Where-Object { -not (Get-Module -ListAvailable -Name $_) })
 if ($missingModules.Count -gt 0) {
     Write-Host ""
@@ -62,39 +69,6 @@ foreach ($m in $requiredModules) {
     }
 }
 
-
-# ─── Privilege tiers ──────────────────────────────────────────────────────────
-# Keys are Graph permission display names; values are tier labels
-$privilegedPermissions = @{
-    'Directory.ReadWrite.All'                   = 'PRIVILEGED'
-    'RoleManagement.ReadWrite.Directory'        = 'PRIVILEGED'
-    'Application.ReadWrite.All'                 = 'PRIVILEGED'
-    'Application.ReadWrite.OwnedBy'             = 'PRIVILEGED'
-    'AppRoleAssignment.ReadWrite.All'           = 'PRIVILEGED'
-    'Policy.ReadWrite.ConditionalAccess'        = 'PRIVILEGED'
-    'Mail.ReadWrite'                            = 'PRIVILEGED'
-    'Mail.Send'                                 = 'PRIVILEGED'
-    'Files.ReadWrite.All'                       = 'PRIVILEGED'
-    'Sites.FullControl.All'                     = 'PRIVILEGED'
-    'User.ReadWrite.All'                        = 'PRIVILEGED'
-    'Group.ReadWrite.All'                       = 'PRIVILEGED'
-    'GroupMember.ReadWrite.All'                 = 'PRIVILEGED'
-    'DelegatedPermissionGrant.ReadWrite.All'    = 'PRIVILEGED'
-    'Domain.ReadWrite.All'                      = 'PRIVILEGED'
-    # Read-only but high recon value
-    'Directory.Read.All'                        = 'PRIVILEGED_READ'
-    'Application.Read.All'                      = 'PRIVILEGED_READ'
-    'AuditLog.Read.All'                         = 'PRIVILEGED_READ'
-    'IdentityRiskEvent.Read.All'                = 'PRIVILEGED_READ'
-    'RoleManagement.Read.Directory'             = 'PRIVILEGED_READ'
-    'User.Read.All'                             = 'PRIVILEGED_READ'
-    'Group.Read.All'                            = 'PRIVILEGED_READ'
-    'Mail.Read'                                 = 'PRIVILEGED_READ'
-    'Files.Read.All'                            = 'PRIVILEGED_READ'
-    'MailboxSettings.ReadWrite'                 = 'PRIVILEGED_READ'
-    'Calendars.ReadWrite'                       = 'PRIVILEGED_READ'
-    'Contacts.ReadWrite'                        = 'PRIVILEGED_READ'
-}
 
 $privilegedAzureRoles = @(
     'Owner'
@@ -134,6 +108,7 @@ function Invoke-WithRetry {
 }
 
 function Assert-Contexts {
+    Assert-AssessmentContexts -RequireAzure:(-not $EntraOnly)
     $required = @('Application.Read.All', 'Directory.Read.All')
     $mgCtx = Get-MgContext
     if ($null -eq $mgCtx) {
@@ -149,10 +124,10 @@ function Assert-Contexts {
         Write-Host "  Reconnect with all required scopes for this script:" -ForegroundColor Yellow
         Write-Host ""
         Write-Host "    Disconnect-MgGraph -ErrorAction SilentlyContinue" -ForegroundColor Cyan
-        Write-Host "    Connect-MgGraph -Scopes $allRequired" -ForegroundColor Cyan
+        Write-Host "    Connect-MgGraph -TenantId '<assessment-tenant-id>' -Scopes $allRequired" -ForegroundColor Cyan
         Write-Host ""
         Write-Host "  TIP: To cover all 10 toolkit scripts in one connect, use:" -ForegroundColor Yellow
-        Write-Host "    Connect-MgGraph -Scopes Application.Read.All,Directory.Read.All,Policy.Read.All,RoleManagement.Read.Directory,AuditLog.Read.All,IdentityRiskEvent.Read.All,CrossTenantInformation.ReadBasic.All" -ForegroundColor Cyan
+        Write-Host "    Connect-MgGraph -TenantId '<assessment-tenant-id>' -Scopes Application.Read.All,Directory.Read.All,Policy.Read.All,RoleManagement.Read.Directory,AuditLog.Read.All,IdentityRiskEvent.Read.All,CrossTenantInformation.ReadBasic.All" -ForegroundColor Cyan
         Write-Host ""
         Write-Error "Missing Graph scopes: $($missing -join ', ')"
         exit 2
@@ -178,59 +153,46 @@ function Get-GraphPermissions {
 
     $graphRows = [System.Collections.Generic.List[PSObject]]::new()
     $graphAppId = '00000003-0000-0000-c000-000000000000'
+    $allSps = @(Get-AssessmentDirectoryData -Resource servicePrincipals -Relationship appRoleAssignments)
 
     # Fetch Microsoft Graph SP once for permission name resolution
     Write-Host "  Fetching Microsoft Graph service principal..." -NoNewline
-    $graphSp = Invoke-WithRetry {
-        Get-MgServicePrincipal -Filter "appId eq '$graphAppId'" -Property 'id,appId,displayName,appRoles' -ErrorAction Stop |
-            Select-Object -First 1
-    }
-    $appRoleMap = @{}  # id → value (permission name)
-    foreach ($role in $graphSp.AppRoles) {
-        $appRoleMap[$role.Id] = $role.Value
-    }
-    Write-Host " done ($($graphSp.AppRoles.Count) app roles indexed)." -ForegroundColor Green
+    $graphSp = $allSps | Where-Object AppId -eq $graphAppId | Select-Object -First 1
+    if (-not $graphSp) { throw 'Microsoft Graph service principal is missing from the directory export.' }
+    Write-Host " done ($($graphSp.AppRoles.Count) app roles)." -ForegroundColor Green
 
     # Cache for all resource SP lookups
-    $resourceSpCache = @{ $graphSp.Id = $graphSp }
+    $resourceSpCache = @{}
 
     # Fetch all service principals (for context)
     Write-Host "  Fetching all service principals for permission mapping..." -NoNewline
-    $allSps = Invoke-WithRetry {
-        Get-MgServicePrincipal -All -Property 'id,appId,displayName,servicePrincipalType,appOwnerOrganizationId' -ErrorAction Stop
-    }
-    $spById    = @{}
-    $spByAppId = @{}
     foreach ($sp in $allSps) {
-        $spById[$sp.Id]       = $sp
-        $spByAppId[$sp.AppId] = $sp
+        if (-not $sp.Id) { throw 'A service principal has no object ID; permission mapping is incomplete.' }
+        $resourceSpCache[$sp.Id] = $sp
     }
     Write-Host " $($allSps.Count) SPs." -ForegroundColor Green
 
-    # Fetch ALL service principal app role assignments in batch via Graph
+    # Expanded assignments are already complete and paged by the shared reader.
     # servicePrincipalId is the principal that RECEIVED the permission
     Write-Host "  Fetching app role assignments (granted permissions)..." -NoNewline
     $allAssignments = [System.Collections.Generic.List[object]]::new()
     try {
-        # Get all service principals that have been granted permissions
-        # We iterate over a sample; for large tenants, use the /appRoleAssignments endpoint scoped to servicePrincipals
         $i = 0
-        $spList = @($allSps | Where-Object { $_.ServicePrincipalType -eq 'Application' })
+        $spList = @($allSps | Where-Object { $_.ServicePrincipalType -in @('Application','ManagedIdentity','ServiceIdentity') })
         foreach ($sp in $spList) {
             $i++
-            if ($spList.Count -gt 50) {
+            if ($spList.Count -gt 50 -and ($i -eq 1 -or $i % 250 -eq 0)) {
                 Write-Progress -Activity 'Fetching app role assignments' -Status "$i / $($spList.Count)" -PercentComplete (($i / $spList.Count) * 100)
             }
             try {
-                $assignments = Invoke-WithRetry {
-                    Get-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $sp.Id -All -ErrorAction Stop
-                }
+                $assignments = @($sp.appRoleAssignments | Where-Object { $null -ne $_ })
                 foreach ($a in $assignments) {
                     $allAssignments.Add(@{
                         PrincipalId        = $sp.Id
                         PrincipalDisplayName = $sp.DisplayName
                         ResourceId         = $a.ResourceId
                         AppRoleId          = $a.AppRoleId
+                        AssignmentId       = $a.Id
                     })
                 }
             } catch {
@@ -244,24 +206,26 @@ function Get-GraphPermissions {
     }
 
     # Resolve each assignment
+    $unresolvedCount = 0
     foreach ($a in $allAssignments) {
         $resourceSp = $null
-        if ($resourceSpCache.ContainsKey($a.ResourceId)) {
+        if ($a.ResourceId -and $resourceSpCache.ContainsKey($a.ResourceId)) {
             $resourceSp = $resourceSpCache[$a.ResourceId]
-        } else {
+        } elseif ($a.ResourceId) {
             try {
                 $resourceSp = Invoke-WithRetry {
                     Get-MgServicePrincipal -ServicePrincipalId $a.ResourceId -Property 'id,appId,displayName,appRoles' -ErrorAction Stop
                 }
                 $resourceSpCache[$a.ResourceId] = $resourceSp
             } catch {
-                Write-Verbose "Could not resolve resource SP $($a.ResourceId): $_"
+                Write-Warning "Could not resolve resource SP $($a.ResourceId): $_"
             }
         }
 
         $permValue = $null
         $permDisplayName = $null
-        if ($resourceSp) {
+        $matchingRole = $null
+        if ($resourceSp -and $a.AppRoleId) {
             $matchingRole = $resourceSp.AppRoles | Where-Object { $_.Id -eq $a.AppRoleId } | Select-Object -First 1
             if ($matchingRole) {
                 $permValue = $matchingRole.Value
@@ -269,24 +233,99 @@ function Get-GraphPermissions {
             }
         }
 
-        # Determine tier
-        $tier = 'STANDARD'
-        if ($permValue -and $privilegedPermissions.ContainsKey($permValue)) {
-            $tier = $privilegedPermissions[$permValue]
-        }
+        if (-not $permValue) { $unresolvedCount++ }
 
         $graphRows.Add([PSCustomObject]@{
             SpObjectId           = $a.PrincipalId
             SpDisplayName        = $a.PrincipalDisplayName
+            AssignmentId         = $a.AssignmentId
+            ResourceObjectId     = $a.ResourceId
+            AppRoleId            = $a.AppRoleId
+            ResolutionStatus     = if ($permValue) { 'Resolved' } else { 'Unresolved' }
             ResourceAppId        = if ($resourceSp) { $resourceSp.AppId } else { $null }
             ResourceDisplayName  = if ($resourceSp) { $resourceSp.DisplayName } else { $null }
             PermissionValue      = $permValue
             PermissionDisplayName = $permDisplayName
-            Tier                 = $tier
+            Description          = if ($matchingRole) { $matchingRole.Description } else { $null }
+            PermissionType       = 'Application'
+            AdminConsentRequired = $true
+            ConsentStatus        = 'Granted application access'
+            GrantState           = 'Granted'
         })
     }
+    if ($unresolvedCount -gt 0) {
+        Write-Warning "$unresolvedCount app role assignment(s) could not be resolved. They remain in the export with Tier=UNKNOWN and their available IDs."
+    }
 
+    Set-WorkloadPermissionRisk -Rows $graphRows.ToArray()
     return $graphRows
+}
+
+function Get-NormalizedPermissions {
+    param([object[]]$ApplicationGrants)
+    $apps = @(Get-AssessmentDirectoryData -Resource applications -Relationship owners)
+    $sps = @(Get-AssessmentDirectoryData -Resource servicePrincipals -Relationship appRoleAssignments)
+    $resources = @{}; $clients = @{}; $appByClient = @{}
+    foreach ($sp in $sps) { if ($sp.Id) { $resources[$sp.Id] = $sp }; if ($sp.AppId) { $clients[$sp.AppId] = $sp } }
+    foreach ($app in $apps) { if ($app.AppId) { $appByClient[$app.AppId] = $app } }
+    $result = [System.Collections.Generic.List[object]]::new()
+    foreach ($grant in $ApplicationGrants) { $result.Add($grant) }
+    $delegated = Get-AssessmentEvidence -Path 'oauth2PermissionGrants'
+    foreach ($grant in $delegated.Records) {
+        $client = if ($grant.clientId) { $resources[$grant.clientId] } else { $null }
+        $resource = if ($grant.resourceId) { $resources[$grant.resourceId] } else { $null }
+        $scopes = @($grant.scope -split ' ' | Where-Object { $_ })
+        if (-not $scopes.Count) { $scopes = @('Unresolved (empty scope)') }
+        foreach ($scope in $scopes) {
+            $definition = $resource.Oauth2PermissionScopes | Where-Object Value -eq $scope | Select-Object -First 1
+            $result.Add([pscustomobject]@{
+                SpObjectId = $grant.clientId; SpDisplayName = $client.DisplayName
+                AssignmentId = $grant.id; ResourceObjectId = $grant.resourceId
+                ResourceAppId = $resource.AppId; ResourceDisplayName = $resource.DisplayName
+                AppRoleId = $definition.Id; PermissionValue = $scope
+                Description = $definition.AdminConsentDescription; PermissionDisplayName = $definition.AdminConsentDisplayName
+                PermissionType = 'Delegated'; AdminConsentRequired = if ($definition) { $definition.Type -eq 'Admin' } else { $null }
+                ConsentStatus = switch ($grant.consentType) { 'AllPrincipals' { 'Granted tenant-wide admin consent' }; 'Principal' { 'Granted to a specific user' }; default { 'Unknown consent scope' } }
+                ConsentScope = $grant.consentType; ConsentPrincipalId = $grant.principalId; GrantState = 'Granted'
+                ResolutionStatus = if ($definition) { 'Resolved' } else { 'Unresolved' }
+            })
+        }
+    }
+    $configured = @{}
+    foreach ($app in $apps) {
+        foreach ($api in $app.RequiredResourceAccess) {
+            $resource = $sps | Where-Object AppId -eq $api.ResourceAppId | Select-Object -First 1
+            foreach ($permission in $api.ResourceAccess) {
+                $type = if ($permission.Type -eq 'Role') { 'Application' } else { 'Delegated' }
+                $key = "$($app.AppId)|$($api.ResourceAppId)|$type|$($permission.Id)"
+                $configured[$key] = $true
+                $client = if ($app.AppId) { $clients[$app.AppId] } else { $null }
+                if ($client.Id -and @($result | Where-Object { $_.SpObjectId -eq $client.Id -and $_.ResourceAppId -eq $api.ResourceAppId -and $_.PermissionType -eq $type -and $_.AppRoleId -eq $permission.Id }).Count) { continue }
+                $definition = if ($type -eq 'Application') { $resource.AppRoles | Where-Object Id -eq $permission.Id | Select-Object -First 1 } else {
+                    $resource.Oauth2PermissionScopes | Where-Object Id -eq $permission.Id | Select-Object -First 1
+                }
+                $result.Add([pscustomobject]@{
+                    SpObjectId = $client.Id; AppObjectId = $app.Id; AppId = $app.AppId; SpDisplayName = $app.DisplayName
+                    ResourceAppId = $api.ResourceAppId; ResourceDisplayName = $resource.DisplayName; AppRoleId = $permission.Id
+                    PermissionValue = $definition.Value; Description = if ($type -eq 'Application') { $definition.Description } else { $definition.AdminConsentDescription }
+                    PermissionType = $type; AdminConsentRequired = if ($type -eq 'Application') { $true } elseif ($definition) { $definition.Type -eq 'Admin' } else { $null }
+                    GrantState = if ($type -eq 'Delegated' -and $delegated.State -ne 'Available') { 'Unknown (grant collection unavailable)' } else { 'Not granted' }
+                    ConsentStatus = if ($type -eq 'Delegated' -and $delegated.State -ne 'Available') { 'Unknown' } else { 'Not granted in snapshot' }
+                    ConfiguredState = 'Configured'; Tier = 'Not a granted permission'
+                })
+            }
+        }
+    }
+    foreach ($row in $result) {
+        if ($row.PSObject.Properties['ConfiguredState']) { continue }
+        $client = if ($row.SpObjectId) { $resources[$row.SpObjectId] } else { $null }
+        $row | Add-Member -NotePropertyName AppId -NotePropertyValue $client.AppId -Force
+        $key = "$($client.AppId)|$($row.ResourceAppId)|$($row.PermissionType)|$($row.AppRoleId)"
+        $state = if (-not $client.AppId -or -not $appByClient.ContainsKey($client.AppId)) { 'Configuration unavailable' } elseif ($configured.ContainsKey($key)) { 'Configured' } else { 'Granted but not configured' }
+        $row | Add-Member -NotePropertyName ConfiguredState -NotePropertyValue $state -Force
+    }
+    Set-WorkloadPermissionRisk -Rows $result.ToArray()
+    return [pscustomobject]@{ Rows = $result.ToArray(); DelegatedEvidence = $delegated }
 }
 
 function Get-AzureRbacAssignments {
@@ -365,6 +404,7 @@ authorizationresources
                 ScopeLevel           = $scopeLevel
                 CreatedOn            = $a.createdOn
                 IsPrivilegedRole     = $isPrivileged
+                ReviewRequired       = $isPrivileged
             })
         }
         if ($assignments.Count -gt 50) { Write-Progress -Activity 'Resolving RBAC assignments' -Completed }
@@ -391,8 +431,9 @@ function Invoke-PermissionSurface {
     Write-Host "═══════════════════════════════════════════════════════════════" -ForegroundColor Cyan
     Write-Host ""
 
-    $graphRows = Get-GraphPermissions
-    $rbacRows  = Get-AzureRbacAssignments
+    $graphRows = @(Get-GraphPermissions)
+    $normalized = Get-NormalizedPermissions -ApplicationGrants $graphRows
+    $rbacRows  = @(if (-not $EntraOnly) { Get-AzureRbacAssignments })
 
     # ── Write CSVs ────────────────────────────────────────────────────────────
     $graphCsvPath = Join-Path $OutputDir '05-permission-surface-graph.csv'
@@ -407,23 +448,29 @@ function Invoke-PermissionSurface {
     if ($rbacRows.Count -gt 0) {
         $rbacRows | Export-Csv -Path $rbacCsvPath -NoTypeInformation -Encoding UTF8
     } else {
-        [PSCustomObject]@{ Note = 'No RBAC assignments found' } | Export-Csv -Path $rbacCsvPath -NoTypeInformation -Encoding UTF8
+        [PSCustomObject]@{ Note = $(if ($EntraOnly) { 'Not collected (Entra-only assessment)' } else { 'No RBAC assignments found' }) } | Export-Csv -Path $rbacCsvPath -NoTypeInformation -Encoding UTF8
     }
 
     # ── Write JSON ────────────────────────────────────────────────────────────
     $jsonResult = @{
         CollectedAt       = (Get-Date -Format 'o')
+        AzureCollected    = -not $EntraOnly
         GraphPermissions  = @($graphRows)
-        AzureRbac         = @($rbacRows)
+        NormalizedPermissions = @($normalized.Rows)
+        DelegatedGrantEvidence = $normalized.DelegatedEvidence
+        SchemaVersion = 2
+        AzureRbac         = if ($EntraOnly) { $null } else { ,@($rbacRows) }
     }
     $jsonPath = Join-Path $OutputDir '05-permission-surface.json'
     $jsonResult | ConvertTo-Json -Depth 6 | Out-File -FilePath $jsonPath -Encoding UTF8
 
     # ── Summary calculations ──────────────────────────────────────────────────
-    $privilegedSps   = @($graphRows | Where-Object { $_.Tier -eq 'PRIVILEGED' }   | Select-Object -ExpandProperty SpObjectId -Unique)
-    $privilegedReadSps = @($graphRows | Where-Object { $_.Tier -eq 'PRIVILEGED_READ' } | Select-Object -ExpandProperty SpObjectId -Unique)
+    $actualPermissions = @($normalized.Rows | Where-Object GrantState -eq 'Granted')
+    $privilegedSps   = @($actualPermissions | Where-Object { $_.Tier -eq 'PRIVILEGED' }   | Select-Object -ExpandProperty SpObjectId -Unique)
+    $privilegedReadSps = @($actualPermissions | Where-Object { $_.Tier -eq 'PRIVILEGED_READ' } | Select-Object -ExpandProperty SpObjectId -Unique)
+    $unclassifiedGrants = @($actualPermissions | Where-Object { $_.Tier -in @('UNCLASSIFIED','UNKNOWN') })
 
-    $perSpCounts = $graphRows | Group-Object SpObjectId | Sort-Object Count -Descending
+    $perSpCounts = $actualPermissions | Group-Object SpObjectId | Sort-Object Count -Descending
     $top10 = $perSpCounts | Select-Object -First 10
 
     $rbacPrivileged     = @($rbacRows | Where-Object { $_.IsPrivilegedRole })
@@ -437,27 +484,33 @@ function Invoke-PermissionSurface {
     Write-Host "  05-permission-surface  SUMMARY" -ForegroundColor Cyan
     Write-Host "═══════════════════════════════════════════════════════════════" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "  Graph Application Permissions:" -ForegroundColor White
-    Write-Host "    Total app role grants          : $($graphRows.Count)"
+    Write-Host "  API permissions (application and delegated):" -ForegroundColor White
+    Write-Host "    Total granted permission rows : $($actualPermissions.Count)"
     $privColor = if ($privilegedSps.Count -gt 0) { 'Red' } else { 'Green' }
     Write-Host "    SPs with PRIVILEGED grants     : $($privilegedSps.Count)" -ForegroundColor $privColor
     Write-Host "    SPs with PRIVILEGED_READ grants: $($privilegedReadSps.Count)" -ForegroundColor Yellow
+    Write-Host "    Unclassified/unresolved grants : $($unclassifiedGrants.Count) (review required)" -ForegroundColor Yellow
     Write-Host ""
     Write-Host "  Top 10 most-permissioned SPs (by grant count):" -ForegroundColor White
     foreach ($sp in $top10) {
-        $spName = ($graphRows | Where-Object { $_.SpObjectId -eq $sp.Name } | Select-Object -First 1).SpDisplayName
+        $spName = ($actualPermissions | Where-Object { $_.SpObjectId -eq $sp.Name } | Select-Object -First 1).SpDisplayName
+        if (-not $spName) { $spName = "Unresolved principal ($($sp.Name))" }
         Write-Host "    $($spName.PadRight(45)) : $($sp.Count) grants"
     }
     Write-Host ""
-    Write-Host "  Azure RBAC:" -ForegroundColor White
-    Write-Host "    Total SP role assignments      : $($rbacRows.Count)"
-    $privRbacColor = if ($rbacPrivileged.Count -gt 0) { 'Red' } else { 'Green' }
-    Write-Host "    Privileged role assignments    : $($rbacPrivileged.Count)" -ForegroundColor $privRbacColor
-    Write-Host "    Sub-scope Owner assignments    : $($subOwners.Count)"
-    Write-Host "    Sub-scope Contributor          : $($subContributors.Count)"
-    Write-Host "    User Access Administrator      : $($uaaAssignments.Count)"
-    $mgmtColor = if ($mgmtGroupRbac.Count -gt 0) { 'Red' } else { 'Green' }
-    Write-Host "    Management-group-scope roles   : $($mgmtGroupRbac.Count)" -ForegroundColor $mgmtColor
+    if ($EntraOnly) {
+        Write-Host '  Azure RBAC: not collected (Entra only).' -ForegroundColor Gray
+    } else {
+        Write-Host "  Azure RBAC:" -ForegroundColor White
+        Write-Host "    Total SP role assignments      : $($rbacRows.Count)"
+        $privRbacColor = if ($rbacPrivileged.Count -gt 0) { 'Red' } else { 'Green' }
+        Write-Host "    Privileged role assignments    : $($rbacPrivileged.Count)" -ForegroundColor $privRbacColor
+        Write-Host "    Sub-scope Owner assignments    : $($subOwners.Count)"
+        Write-Host "    Sub-scope Contributor          : $($subContributors.Count)"
+        Write-Host "    User Access Administrator      : $($uaaAssignments.Count)"
+        $mgmtColor = if ($mgmtGroupRbac.Count -gt 0) { 'Red' } else { 'Green' }
+        Write-Host "    Management-group-scope roles   : $($mgmtGroupRbac.Count)" -ForegroundColor $mgmtColor
+    }
     Write-Host ""
     Write-Host "  Output:"
     Write-Host "    $jsonPath"

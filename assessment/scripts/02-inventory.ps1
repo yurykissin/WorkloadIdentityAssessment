@@ -27,6 +27,9 @@
       <OutputDir>/02-inventory-service-principals.csv
       <OutputDir>/02-inventory-managed-identities.csv
 
+.PARAMETER EntraOnly
+    Collect app registrations and service principals without Azure managed-identity resource discovery.
+
 .EXAMPLE
     ./scripts/02-inventory.ps1 -OutputDir ./output/20260101-120000
 #>
@@ -34,14 +37,17 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [string]$OutputDir = (Join-Path (Split-Path -Parent $PSScriptRoot) ('output/' + (Get-Date -Format 'yyyyMMdd-HHmmss')))
+    [string]$OutputDir = (Join-Path (Split-Path -Parent $PSScriptRoot) ('output/' + (Get-Date -Format 'yyyyMMdd-HHmmss'))),
+    [switch]$EntraOnly
 )
 
 Set-StrictMode -Version 1.0
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'Assessment.Common.psm1') -ErrorAction Stop
 
 # ─── Module prerequisite check ────────────────────────────────────────────────
 $requiredModules = @('Microsoft.Graph.Authentication', 'Microsoft.Graph.Applications', 'Microsoft.Graph.Identity.DirectoryManagement', 'Az.Accounts', 'Az.ResourceGraph')
+if ($EntraOnly) { $requiredModules = @($requiredModules | Where-Object { $_ -notlike 'Az.*' }) }
 $missingModules = @($requiredModules | Where-Object { -not (Get-Module -ListAvailable -Name $_) })
 if ($missingModules.Count -gt 0) {
     Write-Host ""
@@ -92,6 +98,7 @@ function Invoke-WithRetry {
 }
 
 function Assert-Contexts {
+    Assert-AssessmentContexts -RequireAzure:(-not $EntraOnly)
     $required = @('Application.Read.All', 'Directory.Read.All')
     $mgCtx = Get-MgContext
     if ($null -eq $mgCtx) {
@@ -107,10 +114,10 @@ function Assert-Contexts {
         Write-Host "  Reconnect with all required scopes for this script:" -ForegroundColor Yellow
         Write-Host ""
         Write-Host "    Disconnect-MgGraph -ErrorAction SilentlyContinue" -ForegroundColor Cyan
-        Write-Host "    Connect-MgGraph -Scopes $allRequired" -ForegroundColor Cyan
+        Write-Host "    Connect-MgGraph -TenantId '<assessment-tenant-id>' -Scopes $allRequired" -ForegroundColor Cyan
         Write-Host ""
         Write-Host "  TIP: To cover all 10 toolkit scripts in one connect, use:" -ForegroundColor Yellow
-        Write-Host "    Connect-MgGraph -Scopes Application.Read.All,Directory.Read.All,Policy.Read.All,RoleManagement.Read.Directory,AuditLog.Read.All,IdentityRiskEvent.Read.All,CrossTenantInformation.ReadBasic.All" -ForegroundColor Cyan
+        Write-Host "    Connect-MgGraph -TenantId '<assessment-tenant-id>' -Scopes Application.Read.All,Directory.Read.All,Policy.Read.All,RoleManagement.Read.Directory,AuditLog.Read.All,IdentityRiskEvent.Read.All,CrossTenantInformation.ReadBasic.All" -ForegroundColor Cyan
         Write-Host ""
         Write-Error "Missing Graph scopes: $($missing -join ', ')"
         exit 2
@@ -122,17 +129,15 @@ function Get-SignInActivityMap {
     $map = @{}
     try {
         Write-Host "  Fetching SP sign-in activity (beta)..." -NoNewline
-        $activities = Invoke-WithRetry {
-            # Microsoft.Graph.Reports beta cmdlet
-            Get-MgBetaReportServicePrincipalSignInActivity -All -ErrorAction Stop
-        }
+        $evidence = Get-AssessmentSignInActivity
+        if ($evidence.State -ne 'Available') { throw $evidence.Message }
+        $activities = @($evidence.Records)
         foreach ($a in $activities) {
-            $map[$a.AppId] = @{
-                LastSignIn            = $a.LastSignInActivity.LastSignInDateTime
-                LastDelegatedSignIn   = $a.DelegatedClientSignInActivity.LastSignInDateTime
-                LastAppSignIn         = $a.ApplicationAuthenticationClientSignInActivity.LastSignInDateTime
-                LastManagedIdentitySignIn = $a.ManagedIdentitySignInActivity.LastSignInDateTime
+            if (-not $a.AppId) {
+                Write-Warning 'A sign-in activity record has no application ID and cannot be joined to inventory.'
+                continue
             }
+            $map[$a.AppId] = Get-AssessmentActivitySummary $a
         }
         Write-Host " $($activities.Count) records." -ForegroundColor Green
     } catch {
@@ -150,10 +155,12 @@ function Get-AppRegistrations {
     param([string]$TenantId)
 
     Write-Host "  Fetching app registrations..." -NoNewline
-    $apps = Invoke-WithRetry {
-        Get-MgApplication -All -Property 'id,appId,displayName,signInAudience,createdDateTime,tags,publisherDomain,verifiedPublisher,passwordCredentials,keyCredentials,api,requiredResourceAccess,web,spa,publicClient,info' -ErrorAction Stop
-    }
+    $apps = @(Get-AssessmentDirectoryData -Resource applications -Relationship owners)
     Write-Host " $($apps.Count) found." -ForegroundColor Green
+    $ficsById = @{}
+    foreach ($record in (Get-AssessmentDirectoryData -Resource applications -Relationship federatedIdentityCredentials)) {
+        $ficsById[$record.Id] = $record.federatedIdentityCredentials
+    }
 
     $today = [datetime]::UtcNow
     $rows = [System.Collections.Generic.List[PSObject]]::new()
@@ -165,35 +172,20 @@ function Get-AppRegistrations {
             Write-Progress -Activity 'Processing app registrations' -Status "$i / $($apps.Count)" -PercentComplete (($i / $apps.Count) * 100)
         }
 
-        # Federated credential count — lightweight: just count via separate call
-        $ficCount = 0
-        try {
-            $fics = Invoke-WithRetry { Get-MgApplicationFederatedIdentityCredential -ApplicationId $app.Id -All -ErrorAction Stop }
-            $ficCount = $fics.Count
-        } catch {
-            Write-Verbose "Could not get FICs for app $($app.Id): $_"
-        }
+        if (-not $ficsById.ContainsKey($app.Id)) { throw "Application $($app.Id) changed between directory reads. Start a new snapshot." }
+        $ficCount = @($ficsById[$app.Id]).Count
+        $ownerCount = @($app.owners).Count
 
-        # Owner count — separate call
-        $ownerCount = 0
-        try {
-            $owners = Invoke-WithRetry { Get-MgApplicationOwner -ApplicationId $app.Id -All -ErrorAction Stop }
-            $ownerCount = $owners.Count
-        } catch {
-            Write-Verbose "Could not get owners for app $($app.Id): $_"
-        }
-
-        $activePwdCreds  = @($app.PasswordCredentials | Where-Object { $_.EndDateTime -gt $today })
-        $activeKeyCreds  = @($app.KeyCredentials      | Where-Object { $_.EndDateTime -gt $today })
+        $activePwdCreds  = @($app.PasswordCredentials | Where-Object { $_.EndDateTime -and ([datetime]$_.EndDateTime).ToUniversalTime() -gt $today })
+        $activeKeyCreds  = @($app.KeyCredentials      | Where-Object { $_.EndDateTime -and ([datetime]$_.EndDateTime).ToUniversalTime() -gt $today })
 
         $redirectUris = @()
         if ($app.Web.RedirectUris)        { $redirectUris += $app.Web.RedirectUris }
         if ($app.Spa.RedirectUris)        { $redirectUris += $app.Spa.RedirectUris }
         if ($app.PublicClient.RedirectUris) { $redirectUris += $app.PublicClient.RedirectUris }
 
-        $implicitGrant = ($app.Api.Oauth2PermissionScopes.Count -gt 0 -and
-                          ($app.Web.ImplicitGrantSettings.EnableAccessTokenIssuance -eq $true -or
-                           $app.Web.ImplicitGrantSettings.EnableIdTokenIssuance -eq $true))
+        $implicitGrant = ($app.Web.ImplicitGrantSettings.EnableAccessTokenIssuance -eq $true -or
+                          $app.Web.ImplicitGrantSettings.EnableIdTokenIssuance -eq $true)
 
         $requiredAppPerms       = 0
         $requiredDelegatedPerms = 0
@@ -205,7 +197,7 @@ function Get-AppRegistrations {
         }
 
         $ageInDays = if ($app.CreatedDateTime) {
-            [int]($today - $app.CreatedDateTime.ToUniversalTime()).TotalDays
+            [int]($today - ([datetime]$app.CreatedDateTime).ToUniversalTime()).TotalDays
         } else { -1 }
 
         $audienceBucket = switch ($app.SignInAudience) {
@@ -229,6 +221,14 @@ function Get-AppRegistrations {
             TagCount                       = $app.Tags.Count
             Tags                           = ($app.Tags -join ';')
             OwnerCount                     = $ownerCount
+            Owners                         = @($app.owners)
+            RequiredResourceAccess         = @($app.RequiredResourceAccess)
+            RedirectUris                   = @($redirectUris)
+            ImplicitGrantSettings          = $app.Web.ImplicitGrantSettings
+            InstancePropertyLock           = $app.ServicePrincipalLockConfiguration
+            IdentifierUris                 = @($app.IdentifierUris)
+            RequestedAccessTokenVersion    = $app.Api.RequestedAccessTokenVersion
+            ServiceManagementReference     = $app.ServiceManagementReference
             PasswordCredentialCount        = $app.PasswordCredentials.Count
             ActivePasswordCredentialCount  = $activePwdCreds.Count
             KeyCredentialCount             = $app.KeyCredentials.Count
@@ -253,57 +253,42 @@ function Get-ServicePrincipals {
     )
 
     Write-Host "  Fetching service principals..." -NoNewline
-    $sps = Invoke-WithRetry {
-        Get-MgServicePrincipal -All -Property 'id,appId,displayName,servicePrincipalType,appOwnerOrganizationId,accountEnabled,tags,appRoles,oauth2PermissionScopes,createdDateTime' -ErrorAction Stop
-    }
+    $sps = @(Get-AssessmentDirectoryData -Resource servicePrincipals -Relationship appRoleAssignments)
     Write-Host " $($sps.Count) found." -ForegroundColor Green
+    $ownersById = @{}
+    foreach ($record in (Get-AssessmentDirectoryData -Resource servicePrincipals -Relationship owners)) {
+        $ownersById[$record.Id] = $record.owners
+    }
 
+    $missingAppIds = @($sps | Where-Object { -not $_.AppId }).Count
+    if ($missingAppIds -gt 0) {
+        Write-Warning "$missingAppIds service principal(s) have no application ID. They remain in inventory with unknown sign-in activity."
+    }
     $rows = [System.Collections.Generic.List[PSObject]]::new()
     $today = [datetime]::UtcNow
 
     $i = 0
     foreach ($sp in $sps) {
         $i++
-        if ($sps.Count -gt 50) {
+        if ($sps.Count -gt 50 -and ($i -eq 1 -or $i % 250 -eq 0)) {
             Write-Progress -Activity 'Processing service principals' -Status "$i / $($sps.Count)" -PercentComplete (($i / $sps.Count) * 100)
         }
 
         $isExternal = ($null -ne $sp.AppOwnerOrganizationId -and $sp.AppOwnerOrganizationId -ne $TenantId)
 
         # Sign-in activity from pre-fetched map
-        $signinInfo = $SignInActivityMap[$sp.AppId]
+        $signinInfo = if ($sp.AppId) { $SignInActivityMap[$sp.AppId] } else { $null }
         $lastSignIn = $null
-        if ($signinInfo) {
-            $candidates = @(
-                $signinInfo.LastSignIn
-                $signinInfo.LastDelegatedSignIn
-                $signinInfo.LastAppSignIn
-                $signinInfo.LastManagedIdentitySignIn
-            ) | Where-Object { $null -ne $_ }
-            if ($candidates.Count -gt 0) {
-                $lastSignIn = ($candidates | Sort-Object -Descending | Select-Object -First 1)
-            }
-        }
+        if ($signinInfo) { $lastSignIn = $signinInfo.LastSignIn }
 
         # Owner count — only for Application type SPs owned by this tenant
-        $ownerCount = 0
-        if ($sp.ServicePrincipalType -eq 'Application' -and -not $isExternal) {
-            try {
-                $owners = Invoke-WithRetry { Get-MgServicePrincipalOwner -ServicePrincipalId $sp.Id -All -ErrorAction Stop }
-                $ownerCount = $owners.Count
-            } catch {
-                Write-Verbose "Could not get owners for SP $($sp.Id): $_"
-            }
+        $ownerCount = $null
+        if ($sp.ServicePrincipalType -eq 'Application' -and $sp.AppOwnerOrganizationId -eq $TenantId) {
+            if (-not $ownersById.ContainsKey($sp.Id)) { throw "Service principal $($sp.Id) changed between directory reads. Start a new snapshot." }
+            $ownerCount = @($ownersById[$sp.Id]).Count
         }
 
-        # App role assignment count
-        $appRoleAssignmentCount = 0
-        try {
-            $assignments = Invoke-WithRetry { Get-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $sp.Id -All -ErrorAction Stop }
-            $appRoleAssignmentCount = $assignments.Count
-        } catch {
-            Write-Verbose "Could not get app role assignments for SP $($sp.Id): $_"
-        }
+        $appRoleAssignmentCount = @($sp.appRoleAssignments | Where-Object { $null -ne $_ }).Count
 
         $row = [PSCustomObject]@{
             SpObjectId               = $sp.Id
@@ -317,9 +302,15 @@ function Get-ServicePrincipals {
             TagCount                 = $sp.Tags.Count
             Tags                     = ($sp.Tags -join ';')
             OwnerCount               = $ownerCount
+            Owners                   = if ($ownersById.ContainsKey($sp.Id)) { @($ownersById[$sp.Id]) } else { $null }
+            CreatedDateTime          = $sp.CreatedDateTime
+            SignInAudience           = $sp.SignInAudience
+            PasswordCredentials      = @($sp.PasswordCredentials)
+            KeyCredentials           = @($sp.KeyCredentials)
             LastSignIn               = $lastSignIn
+            ActivityFlows            = $signinInfo.Flows
             DaysSinceLastSignIn      = if ($lastSignIn) { [int]($today - [datetime]$lastSignIn).TotalDays } else { $null }
-            NeverSignedIn            = ($null -eq $lastSignIn)
+            NeverSignedIn            = $null
             AppRoleAssignmentCount   = $appRoleAssignmentCount
             AppRoleCount             = $sp.AppRoles.Count
             OAuth2ScopeCount         = $sp.Oauth2PermissionScopes.Count
@@ -435,9 +426,16 @@ function Invoke-Inventory {
     $signInMap = Get-SignInActivityMap
 
     # Collect all three tables
-    $appRegs  = Get-AppRegistrations -TenantId $tenantId
-    $sps      = Get-ServicePrincipals -TenantId $tenantId -SignInActivityMap $signInMap
-    $mis      = Get-ManagedIdentities
+    $appRegs  = @(Get-AppRegistrations -TenantId $tenantId)
+    $sps      = @(Get-ServicePrincipals -TenantId $tenantId -SignInActivityMap $signInMap)
+    $mis      = @(if (-not $EntraOnly) { Get-ManagedIdentities })
+    $evidence = Get-AssessmentWorkloadEvidence
+    foreach ($app in $appRegs) {
+        $app | Add-Member -NotePropertyName CreationEvidence -NotePropertyValue (Get-AssessmentCreator $app.AppObjectId $evidence.CreationAudits)
+    }
+    foreach ($sp in $sps) {
+        $sp | Add-Member -NotePropertyName CreationEvidence -NotePropertyValue (Get-AssessmentCreator $sp.SpObjectId $evidence.CreationAudits)
+    }
 
     # ── Write CSVs ────────────────────────────────────────────────────────────
     $appCsvPath = Join-Path $OutputDir '02-inventory-app-registrations.csv'
@@ -446,18 +444,26 @@ function Invoke-Inventory {
 
     $appRegs | Export-Csv -Path $appCsvPath -NoTypeInformation -Encoding UTF8
     $sps     | Export-Csv -Path $spCsvPath  -NoTypeInformation -Encoding UTF8
-    $mis     | Export-Csv -Path $miCsvPath  -NoTypeInformation -Encoding UTF8
+    if ($EntraOnly) {
+        [pscustomobject]@{ Note = 'Not collected (Entra-only assessment)' } | Export-Csv -Path $miCsvPath -NoTypeInformation -Encoding UTF8
+    } else {
+        $mis | Export-Csv -Path $miCsvPath -NoTypeInformation -Encoding UTF8
+    }
 
     # ── Write JSON ────────────────────────────────────────────────────────────
     $jsonResult = @{
         CollectedAt       = (Get-Date -Format 'o')
+        SchemaVersion     = 2
+        SignInActivity    = Get-AssessmentSignInActivity
+        WorkloadEvidence  = $evidence
+        AzureCollected    = -not $EntraOnly
         TenantId          = $tenantId
         appRegistrations  = @($appRegs)
         servicePrincipals = @($sps)
-        managedIdentities = @($mis)
+        managedIdentities = if ($EntraOnly) { $null } else { ,@($mis) }
     }
     $jsonPath = Join-Path $OutputDir '02-inventory.json'
-    $jsonResult | ConvertTo-Json -Depth 6 | Out-File -FilePath $jsonPath -Encoding UTF8
+    $jsonResult | ConvertTo-Json -Depth 30 | Out-File -FilePath $jsonPath -Encoding UTF8
 
     # ── Summary ───────────────────────────────────────────────────────────────
     $audienceCounts = $appRegs | Group-Object SignInAudience | Sort-Object Count -Descending
@@ -475,9 +481,13 @@ function Invoke-Inventory {
     Write-Host "  App registrations    : $($appRegs.Count)"
     Write-Host "  Service principals   : $($sps.Count)"
     Write-Host "    — Multi-tenant SPs (external apps) : $externalSPs"
-    Write-Host "  Managed identities   : $($mis.Count)"
-    Write-Host "    — User-assigned    : $uaMiCount"
-    Write-Host "    — System-assigned  : $saMiCount"
+    if ($EntraOnly) {
+        Write-Host '  Managed identity resources: not collected (Entra only).'
+    } else {
+        Write-Host "  Managed identities   : $($mis.Count)"
+        Write-Host "    — User-assigned    : $uaMiCount"
+        Write-Host "    — System-assigned  : $saMiCount"
+    }
     Write-Host ""
     Write-Host "  App reg sign-in audience breakdown:" -ForegroundColor White
     foreach ($g in $audienceCounts) {

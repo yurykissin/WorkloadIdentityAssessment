@@ -6,8 +6,8 @@ principals, managed identities, and federated identity credentials (FICs).
 
 The goal: give an organization (security team, platform engineering, identity
 team) everything needed to **document, govern, manage, and continuously
-assess** the workload identities living in its Entra tenant — without ever
-modifying tenant state.
+assess** the workload identities living in its Entra tenant — without
+modifying assessed identities, credentials, grants, or tenant policies.
 
 ## What's in here
 
@@ -18,7 +18,6 @@ modifying tenant state.
 | [`kb/03-management/`](kb/03-management/) | Operational runbooks: lifecycle (create → retire), credential rotation, access reviews, monitoring & alerts, incident response, tooling (Graph / Bicep / PIM-for-Groups). |
 | [`kb/INDEX.md`](kb/INDEX.md) | Auto-generated heading index across the whole KB — single grep target. |
 | [`assessment/`](assessment/) | **Read-only** PowerShell toolkit + ARM-based one-click deploy that inventories the workload-identity surface in your tenant + subscriptions and produces a styled HTML report with prioritized findings. |
-| [`remediation/`](remediation/) | **Write-action** PowerShell scripts that apply the policies recommended by the KB and the assessment — e.g. tenant-default `appManagementPolicy` (block secret addition, cap cert lifetime, restrict identifier URIs, block multitenant/consumer audiences) and named per-app policies for privileged workloads. All scripts support `-WhatIf`. |
 
 ## How to use
 
@@ -37,9 +36,9 @@ modifying tenant state.
 3. **Walk the HTML report** with stakeholders. Each finding links its Microsoft
    or pinned SCuBA source and affected objects; Control coverage exposes manual
    and unavailable evidence instead of implying complete compliance.
-4. **Remediate** — apply the policies the findings + KB articles call for.
-   The [`remediation/`](remediation/) folder ships PowerShell helpers for
-   the most common controls (app management policies today; more coming).
+4. **Plan changes outside this toolkit** — findings and KB articles provide
+   recommendations and source evidence, but this repository intentionally
+   includes no tenant-remediation scripts.
 5. **Re-run periodically** — quarterly is a sensible cadence — to track
    drift and demonstrate progress.
 
@@ -106,12 +105,13 @@ before interpreting findings or older snapshots.
 ## Out of scope
 
 - No Bicep / Terraform sample IaC for provisioning identities yet.
-- The **assessment** is read-only: it never grants permissions, modifies
-  policies, or rotates credentials.
-- The **remediation** scripts do modify state but are scoped narrowly
-  (one policy area per script) and all support `-WhatIf`. Broader IAM
-  remediation (credential migration, RBAC reshaping, etc.) is still left
-  to humans following the KB runbooks.
+- The toolkit is read-only: assessment collection never grants permissions,
+  modifies policies, rotates credentials, or applies findings.
+- Tenant remediation and implementation automation are intentionally not
+  included. The report and KB provide evidence and recommendations only.
+- The optional Azure deployment path provisions its own execution and report
+  storage resources and assigns the assessment identity read access. Those
+  bootstrap actions do not alter the workload identities being assessed.
 
 ## License
 

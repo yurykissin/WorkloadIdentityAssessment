@@ -148,6 +148,9 @@ $commonModule = Import-Module (Join-Path $scripts 'Assessment.Common.psm1') -Pas
 }
 $savedSubscriptionScope = $env:ASSESSMENT_SUBSCRIPTION_IDS
 try {
+    $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
+    Assert-Entry (-not (Test-Path (Join-Path $repoRoot 'remediation'))) 'Repository ships no tenant-remediation scripts'
+
     Reset-Entry
     Connect-AssessmentContexts
     $calls = $global:AssessmentEntryTest.AuthCalls

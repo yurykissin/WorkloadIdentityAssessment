@@ -5,6 +5,58 @@ $script:DirectoryCache = @{}
 $script:OwnGraphAuthentication = $false
 $script:OwnAzureAuthentication = $false
 
+function Get-AssessmentRequiredModules {
+    [CmdletBinding()]
+    param([bool]$IncludeAzure = $true)
+
+    foreach ($name in @(
+        'Microsoft.Graph.Authentication', 'Microsoft.Graph.Applications'
+        'Microsoft.Graph.Identity.DirectoryManagement', 'Microsoft.Graph.Identity.SignIns'
+        'Microsoft.Graph.Identity.Governance', 'Microsoft.Graph.Reports', 'Microsoft.Graph.Users'
+    )) {
+        @{ Name = $name; MinVersion = '2.15.0' }
+    }
+    if ($IncludeAzure) {
+        @{ Name = 'Az.Accounts'; MinVersion = '3.0.0' }
+        @{ Name = 'Az.Resources'; MinVersion = '7.0.0' }
+        @{ Name = 'Az.ResourceGraph'; MinVersion = '1.0.0' }
+        @{ Name = 'Az.Monitor'; MinVersion = '5.0.0' }
+        @{ Name = 'Az.OperationalInsights'; MinVersion = '3.0.0' }
+    }
+}
+
+function Assert-AssessmentPrerequisites {
+    [CmdletBinding()]
+    param([bool]$IncludeAzure = $true)
+
+    if ($PSVersionTable.PSVersion -lt [version]'7.2') {
+        throw "PowerShell $($PSVersionTable.PSVersion) is unsupported. PowerShell 7.2+ (pwsh) is required; Windows PowerShell 5.1 is not supported."
+    }
+    $failures = [System.Collections.Generic.List[string]]::new()
+    foreach ($required in Get-AssessmentRequiredModules -IncludeAzure:$IncludeAzure) {
+        $minimum = [version]$required.MinVersion
+        $installed = Get-Module -ListAvailable -Name $required.Name |
+            Sort-Object Version -Descending | Select-Object -First 1
+        $loaded = @(Get-Module -Name $required.Name -All)
+        if (-not $installed) {
+            $failures.Add("$($required.Name) is missing (requires >= $minimum).")
+        } elseif ($installed.Version -lt $minimum) {
+            $failures.Add("$($required.Name) $($installed.Version) is outdated (requires >= $minimum).")
+        }
+        foreach ($module in $loaded) {
+            if ($module.Version -lt $minimum) {
+                $failures.Add("$($required.Name) $($module.Version) is already loaded. Open a fresh pwsh after updating to >= $minimum.")
+            }
+        }
+    }
+    if ($failures.Count -gt 0) {
+        $scope = if ($IncludeAzure) { 'EntraAndAzure' } else { 'Entra' }
+        throw ("Prerequisite check failed:`n  " + ($failures -join "`n  ") +
+            "`nRun ./scripts/00-prereqs.ps1 -AssessmentScope $scope in PowerShell 7.2+, then retry.")
+    }
+    Write-Host "  [OK] Prerequisites: PowerShell $($PSVersionTable.PSVersion), required module versions available." -ForegroundColor Green
+}
+
 function Connect-AssessmentContexts {
     [CmdletBinding()]
     param(
@@ -410,4 +462,4 @@ function Get-AssessmentDirectoryData {
     return $result
 }
 
-Export-ModuleMember -Function Connect-AssessmentContexts, Disconnect-AssessmentContexts, Assert-AssessmentContexts, Start-AssessmentCollection, Stop-AssessmentCollection, Get-AssessmentDirectoryData, Get-AssessmentCredentialActivity, Get-AssessmentEvidence, Get-AssessmentSignInActivity, Get-AssessmentActivitySummary, Get-AssessmentWorkloadEvidence, Get-AssessmentCreator
+Export-ModuleMember -Function Get-AssessmentRequiredModules, Assert-AssessmentPrerequisites, Connect-AssessmentContexts, Disconnect-AssessmentContexts, Assert-AssessmentContexts, Start-AssessmentCollection, Stop-AssessmentCollection, Get-AssessmentDirectoryData, Get-AssessmentCredentialActivity, Get-AssessmentEvidence, Get-AssessmentSignInActivity, Get-AssessmentActivitySummary, Get-AssessmentWorkloadEvidence, Get-AssessmentCreator

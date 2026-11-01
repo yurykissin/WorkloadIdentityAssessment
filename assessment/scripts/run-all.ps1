@@ -1,3 +1,4 @@
+﻿#Requires -Version 7.2
 <#
 .SYNOPSIS
     Orchestrator — runs scripts 01–08 in order, captures exit codes, prints
@@ -665,6 +666,7 @@ function Invoke-RunAll {
     Write-Host "═══════════════════════════════════════════════════════════════════════" -ForegroundColor Cyan
     Write-Host ""
 
+    Assert-AssessmentPrerequisites -IncludeAzure:$includeAzure
     Connect-AssessmentContexts -TenantId $TenantId -UseExistingContext:$UseExistingContext -IncludeAzure:$includeAzure -IncludeOptionalWorkloadEvidence:$IncludeOptionalWorkloadEvidence
     Assert-Contexts -IncludeAzure:$includeAzure
     Start-AssessmentCollection -IncludeAzure:$includeAzure

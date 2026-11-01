@@ -1,3 +1,4 @@
+﻿#Requires -Version 7.2
 <#
 .SYNOPSIS
     Validates prerequisites for the Workload Identity Assessment toolkit.
@@ -19,9 +20,9 @@
         Microsoft.Graph.Identity.DirectoryManagement,
         Microsoft.Graph.Identity.SignIns,
         Microsoft.Graph.Identity.Governance,
-        Microsoft.Graph.Reports,
+        Microsoft.Graph.Reports, Microsoft.Graph.Users,
         Az.Accounts, Az.Resources, Az.ResourceGraph,
-        Az.KeyVault, Az.Monitor
+        Az.Monitor, Az.OperationalInsights (EntraAndAzure only)
 
     No Graph connection required — this script is pure local validation.
 #>
@@ -33,26 +34,22 @@ param(
     [switch]$CleanInstall,
 
     # Skip interactive prompts; install/upgrade/clean automatically.
-    [switch]$NonInteractive
+    [switch]$NonInteractive,
+
+    [ValidateSet('Entra', 'EntraAndAzure')]
+    [string]$AssessmentScope = 'EntraAndAzure',
+
+    # Validate only; never install, update or uninstall modules.
+    [switch]$CheckOnly
 )
 
 Set-StrictMode -Version 1.0
 $ErrorActionPreference = 'Stop'
 
 # ─── Required module catalogue ────────────────────────────────────────────────
-$requiredModules = @(
-    @{ Name = 'Microsoft.Graph.Authentication';                MinVersion = '2.15.0' }
-    @{ Name = 'Microsoft.Graph.Applications';                  MinVersion = '2.15.0' }
-    @{ Name = 'Microsoft.Graph.Identity.DirectoryManagement';  MinVersion = '2.15.0' }
-    @{ Name = 'Microsoft.Graph.Identity.SignIns';              MinVersion = '2.15.0' }
-    @{ Name = 'Microsoft.Graph.Identity.Governance';           MinVersion = '2.15.0' }
-    @{ Name = 'Microsoft.Graph.Reports';                       MinVersion = '2.15.0' }
-    @{ Name = 'Az.Accounts';                                   MinVersion = '3.0.0'  }
-    @{ Name = 'Az.Resources';                                  MinVersion = '7.0.0'  }
-    @{ Name = 'Az.ResourceGraph';                              MinVersion = '1.0.0'  }
-    @{ Name = 'Az.KeyVault';                                   MinVersion = '6.0.0'  }
-    @{ Name = 'Az.Monitor';                                    MinVersion = '5.0.0'  }
-)
+Import-Module (Join-Path $PSScriptRoot 'Assessment.Common.psm1') -Force -ErrorAction Stop
+$includeAzure = $AssessmentScope -eq 'EntraAndAzure'
+$requiredModules = @(Get-AssessmentRequiredModules -IncludeAzure:$includeAzure)
 
 # ─── Required Graph delegated scopes ─────────────────────────────────────────
 $requiredScopes = @(
@@ -67,9 +64,7 @@ $requiredScopes = @(
 
 # ─── Required Azure roles ─────────────────────────────────────────────────────
 $requiredAzureRoles = @(
-    'Reader                  — on each in-scope subscription (covers Resource Graph, RBAC enumeration, KV config, diagnostic settings)'
-    'Monitoring Reader        — on each in-scope subscription / resource group (for diagnostic settings read; Reader usually sufficient)'
-    'Key Vault Reader         — on Key Vaults if RBAC-protected (to read KV configuration metadata)'
+    'Reader — on each in-scope subscription (Resource Graph, RBAC enumeration, Key Vault configuration, workspaces and diagnostic settings). No secret/key data access is required.'
 )
 
 function Confirm-Action {
@@ -151,7 +146,7 @@ function Test-ModuleHealth {
 
     if (-not $hasAnyProblem) { return $true }
 
-    $anyLoaded = (Get-Module Microsoft.Graph*) -or (Get-Module Az.*)
+    $anyLoaded = @(foreach ($family in $ModuleFamilies) { Get-Module "$family*" }).Count -gt 0
 
     if (-not $CleanInstall) {
         Write-Host "  Re-run with -CleanInstall to uninstall conflicting versions and reinstall fresh:" -ForegroundColor Cyan
@@ -273,8 +268,15 @@ function Invoke-PrereqCheck {
     Test-PowerShellVersion
     Write-Host ""
 
+    if ($CheckOnly) {
+        Assert-AssessmentPrerequisites -IncludeAzure:$includeAzure
+        return
+    }
+
     # ── 2. Module health check (BEFORE module install loop) ─────────────────
-    $healthOk = Test-ModuleHealth
+    $families = @('Microsoft.Graph')
+    if ($includeAzure) { $families += 'Az' }
+    $healthOk = Test-ModuleHealth -ModuleFamilies $families
     if (-not $healthOk -and -not $CleanInstall) {
         Write-Host "═══════════════════════════════════════════════════════════════" -ForegroundColor Cyan
         Write-Host "  STATUS: Module conflict — re-run with -CleanInstall." -ForegroundColor Red
@@ -309,20 +311,28 @@ function Invoke-PrereqCheck {
     Write-Host "    RoleManagement.Read.Directory     → Directory role assignments"
     Write-Host "    CrossTenantInformation.ReadBasic.All → Cross-tenant access policy defaults"
     Write-Host ""
+    Write-Host "  Admin consent is required for these scopes. The signed-in user also needs supported read roles (for example Security Reader) for role-protected reports/policies." -ForegroundColor Gray
+    Write-Host "  Optional -IncludeOptionalWorkloadEvidence scopes: AgentIdentity.Read.All, AgentIdentityBlueprint.Read.All, IdentityRiskyServicePrincipal.Read.All." -ForegroundColor Gray
+    Write-Host "  Premium/preview evidence depends on tenant licensing, API/cloud support and role access; unavailable evidence is not a compliant result." -ForegroundColor Gray
+    Write-Host ""
 
     # ── 4. Azure roles ─────────────────────────────────────────────────────────
-    Write-Host "▶ Required Azure Roles" -ForegroundColor White
-    Write-Host "  run-all.ps1 handles Azure sign-in and tenant alignment." -ForegroundColor Gray
-    Write-Host "  For individual collectors or caller-managed authentication:" -ForegroundColor Gray
-    Write-Host ""
-    Write-Host "  Disable-AzContextAutosave -Scope Process | Out-Null" -ForegroundColor Yellow
-    Write-Host "  Connect-AzAccount -Tenant '<assessment-tenant-id>' -Scope Process -SkipContextPopulation" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "  Role assignments required:" -ForegroundColor Gray
-    foreach ($role in $requiredAzureRoles) {
-        Write-Host "    • $role" -ForegroundColor White
+    if ($includeAzure) {
+        Write-Host "▶ Required Azure Roles" -ForegroundColor White
+        Write-Host "  run-all.ps1 handles Azure sign-in and tenant alignment." -ForegroundColor Gray
+        Write-Host "  For individual collectors or caller-managed authentication:" -ForegroundColor Gray
+        Write-Host ""
+        Write-Host "  Disable-AzContextAutosave -Scope Process | Out-Null" -ForegroundColor Yellow
+        Write-Host "  Connect-AzAccount -Tenant '<assessment-tenant-id>' -Scope Process -SkipContextPopulation" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  Role assignments required:" -ForegroundColor Gray
+        foreach ($role in $requiredAzureRoles) {
+            Write-Host "    • $role" -ForegroundColor White
+        }
+        Write-Host ""
+    } else {
+        Write-Host "  Entra-only setup: Azure modules, roles and authentication are not required." -ForegroundColor Gray
     }
-    Write-Host ""
 
     # ── 5. Typical run instructions ───────────────────────────────────────────
     Write-Host "▶ Typical Run Sequence" -ForegroundColor White
@@ -336,6 +346,7 @@ function Invoke-PrereqCheck {
     # ── 6. Final status ───────────────────────────────────────────────────────
     Write-Host "═══════════════════════════════════════════════════════════════" -ForegroundColor Cyan
     if ($modulesOk) {
+        Assert-AssessmentPrerequisites -IncludeAzure:$includeAzure
         Write-Host "  STATUS: All module prerequisites satisfied." -ForegroundColor Green
         Write-Host "  Next: ./scripts/run-all.ps1" -ForegroundColor Green
     } else {
@@ -343,6 +354,9 @@ function Invoke-PrereqCheck {
     }
     Write-Host "═══════════════════════════════════════════════════════════════" -ForegroundColor Cyan
     Write-Host ""
+    if (-not $modulesOk) {
+        throw 'One or more module prerequisites are missing or outdated. Re-run this setup script before collection.'
+    }
 }
 
 Invoke-PrereqCheck

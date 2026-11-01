@@ -21,6 +21,32 @@ modifying assessed identities, credentials, grants, or tenant policies.
 
 ## How to use
 
+**Local prerequisites:** PowerShell **7.2+** (`pwsh`, not Windows PowerShell
+5.1), the Graph module versions and admin-consented read permissions listed in
+[the complete prerequisite checklist](assessment/README.md#prerequisites-local-mode),
+and an account with access to the selected tenant. Azure modules and subscription
+Reader access are required only for **Entra + Azure**. Installation needs internet
+access to PowerShell Gallery; collection needs Microsoft Graph and, when selected,
+Azure endpoints. Optional premium/preview evidence has additional access and
+licensing requirements.
+
+From the repository root:
+
+```powershell
+# One-time setup: choose the same scope you will assess
+pwsh -File ./assessment/scripts/00-prereqs.ps1 -AssessmentScope Entra
+
+# Validate local prerequisites without installing anything or signing in
+pwsh -File ./assessment/scripts/00-prereqs.ps1 -AssessmentScope Entra -CheckOnly
+
+# Sign in, collect and generate the report
+pwsh -File ./assessment/scripts/run-all.ps1 -AssessmentScope Entra
+```
+
+Use `EntraAndAzure` instead for Azure resource collection. Both entry points
+reject unsupported PowerShell versions; `run-all.ps1` checks required module
+versions before authentication and never installs modules automatically.
+
 1. **Read the KB first** — `kb/01-architecture/` to align on terminology and
    decide which identity type belongs where; `kb/02-governance/` to ratify a
    policy baseline; `kb/03-management/` to set up operations.

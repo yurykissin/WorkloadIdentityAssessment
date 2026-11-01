@@ -31,14 +31,47 @@ Resource Manager endpoints only.
 
 | Requirement | Value |
 |-------------|-------|
-| PowerShell | 7.2+ (Windows / macOS / Linux) |
-| Microsoft Graph PowerShell SDK | Installed via `00-prereqs.ps1` |
-| Az PowerShell module | Entra + Azure only; installed via `00-prereqs.ps1` |
+| PowerShell | **7.2+**, Windows / macOS / Linux. Use `pwsh`, not Windows PowerShell 5.1 (`powershell.exe`). [Install PowerShell](https://github.com/PowerShell/PowerShell/releases). |
+| Microsoft Graph PowerShell modules | All seven modules below, each **2.15.0+**; installed via `00-prereqs.ps1`. |
+| Az PowerShell modules | **Entra + Azure only**; names and minimum versions below. |
 | `Microsoft.Graph` scopes (delegated, signed in interactively) | `Application.Read.All`, `Directory.Read.All`, `Policy.Read.All`, `AuditLog.Read.All`, `IdentityRiskEvent.Read.All`, `RoleManagement.Read.Directory`, `CrossTenantInformation.ReadBasic.All` |
-| Azure RBAC | Entra + Azure only: `Reader` on subscriptions in scope |
+| Tenant access and consent | Sign in to the assessed tenant. The delegated scopes need administrator consent; granting consent is separate from running this read-only assessment. Role-protected reports and policies also require supported user roles, such as Security Reader. Consent alone does not grant the signed-in user a directory role. |
+| Azure RBAC | **Entra + Azure only:** `Reader` on each subscription in scope. Both SDK contexts must target the same tenant. Key Vault configuration is inventoried via Resource Graph; no secret/key-value access or Key Vault data-plane role is needed. |
+| Network | Setup: PowerShell Gallery (`https://www.powershellgallery.com`) and its package download endpoints. Collection: Microsoft authentication and Graph endpoints for the selected cloud; Azure authentication/Resource Manager endpoints for Entra + Azure. Proxies/firewalls must permit these SDK calls. |
+| Local files | Use a writable output folder and retain the complete downloaded repository, including `assessment/controls` and `assessment/scripts/report-assets`. Exports and transcripts contain tenant information. |
+| Optional evidence | `-IncludeOptionalWorkloadEvidence` requests `AgentIdentity.Read.All`, `AgentIdentityBlueprint.Read.All`, `IdentityRiskyServicePrincipal.Read.All`, requiring consent and applicable roles. Workload Identities Premium, Entra P2 and preview/cloud/API availability affect individual checks; they are **not** prerequisites for basic inventory. Unavailable evidence is reported explicitly. |
+| Browser | Interactive sign-in needs browser authentication. Opening the HTML report needs a modern browser; `-NoOpen` disables automatic opening. Caller-managed/app-only runs do not require interactive sign-in. |
 
-Run `./scripts/00-prereqs.ps1` first — it installs modules and validates that
-the signed-in user has the required scopes/roles.
+| Required module | Minimum version | Scope |
+| --- | --- | --- |
+| `Microsoft.Graph.Authentication` | 2.15.0 | Both |
+| `Microsoft.Graph.Applications` | 2.15.0 | Both |
+| `Microsoft.Graph.Identity.DirectoryManagement` | 2.15.0 | Both |
+| `Microsoft.Graph.Identity.SignIns` | 2.15.0 | Both |
+| `Microsoft.Graph.Identity.Governance` | 2.15.0 | Both |
+| `Microsoft.Graph.Reports` | 2.15.0 | Both |
+| `Microsoft.Graph.Users` | 2.15.0 | Both |
+| `Az.Accounts` | 3.0.0 | Entra + Azure |
+| `Az.Resources` | 7.0.0 | Entra + Azure |
+| `Az.ResourceGraph` | 1.0.0 | Entra + Azure |
+| `Az.Monitor` | 5.0.0 | Entra + Azure |
+| `Az.OperationalInsights` | 3.0.0 | Entra + Azure |
+
+Run `./scripts/00-prereqs.ps1 -AssessmentScope Entra` or `EntraAndAzure` first.
+It checks PowerShell, offers to install/update the selected modules and prints
+the required permissions/roles. It **does not sign in or verify tenant access**.
+Use `-CheckOnly` to validate installed/loaded module versions without installation
+or authentication. The setup script defaults to `EntraAndAzure` when scope is
+omitted; Entra-only setup does not inspect/install Azure modules.
+
+`run-all.ps1` checks the selected scope's module minimum versions before sign-in,
+stops with a named failure and setup command when modules are missing/outdated,
+and rejects an already loaded version below the minimum even when a newer one
+is installed. Open a fresh `pwsh` after upgrading a loaded SDK. Both entry points
+have UTF-8 encoding markers and a PowerShell 7.2 version requirement, so Windows
+PowerShell reports the unsupported version instead of misleading parse errors.
+Tenant permissions, licensing and remote connectivity can only be established
+after sign-in; collection failures/unavailable evidence remain visible.
 
 ## Layout
 
@@ -74,9 +107,19 @@ assessment/
 Run from `assessment/` in PowerShell. After the one-time module setup, the
 entry point handles sign-in, collection, report generation and opening the report.
 
+On Windows, use **PowerShell 7.2+** (`pwsh`), not Windows PowerShell 5.1
+(`powershell.exe`). From an older PowerShell window, launch the entry point with
+`pwsh -File .\scripts\run-all.ps1`.
+
 ```powershell
 # One-time setup, if the required modules are not already installed
-./scripts/00-prereqs.ps1
+./scripts/00-prereqs.ps1 -AssessmentScope Entra
+
+# Or install Azure dependencies as well
+./scripts/00-prereqs.ps1 -AssessmentScope EntraAndAzure
+
+# Optional: validate only, without installing or authenticating
+./scripts/00-prereqs.ps1 -AssessmentScope Entra -CheckOnly
 
 # Normal run: choose Entra only or Entra + Azure before sign-in
 ./scripts/run-all.ps1

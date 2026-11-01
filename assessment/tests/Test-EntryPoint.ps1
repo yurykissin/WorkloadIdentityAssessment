@@ -24,6 +24,21 @@ function Assert-EntryRejected([scriptblock]$Action, [string]$Pattern, [string]$M
     try { & $Action | Out-Null } catch { $messageReceived = $_.Exception.Message }
     Assert-Entry ($messageReceived -like $Pattern) "$Message (received: $messageReceived)"
 }
+foreach ($entryPoint in @('run-all.ps1', '00-prereqs.ps1')) {
+    $runnerBytes = [IO.File]::ReadAllBytes((Join-Path $scripts $entryPoint))
+    $hasUtf8Bom = $runnerBytes.Length -ge 3 -and $runnerBytes[0] -eq 0xEF -and $runnerBytes[1] -eq 0xBB -and $runnerBytes[2] -eq 0xBF
+    # Windows PowerShell uses its legacy code page for UTF-8 files without a BOM.
+    $windowsSource = if ($hasUtf8Bom) {
+        [Text.Encoding]::UTF8.GetString($runnerBytes, 3, $runnerBytes.Length - 3)
+    } else {
+        [Text.Encoding]::GetEncoding(1252).GetString($runnerBytes)
+    }
+    $runnerTokens = $null
+    $runnerErrors = $null
+    $runnerAst = [Management.Automation.Language.Parser]::ParseInput($windowsSource, [ref]$runnerTokens, [ref]$runnerErrors)
+    Assert-Entry ($runnerErrors.Count -eq 0) "$entryPoint parses with Windows PowerShell file-encoding detection"
+    Assert-Entry ($runnerAst.ScriptRequirements.RequiredPSVersion -eq [version]'7.2') "$entryPoint rejects unsupported PowerShell versions before loading modules or authenticating"
+}
 $global:AssessmentEntryTest = @{
     Graph = $null; Azure = $null
     AuthCalls = [System.Collections.Generic.List[object]]::new()
@@ -128,11 +143,14 @@ function Set-EntryGraph([string]$Scope = 'Process', [string]$AuthType = 'Delegat
 }
 $savedModulePath = $env:PSModulePath
 $mockModules = Join-Path $OutputRoot 'mock-modules'
-$mockGraphModule = Join-Path $mockModules 'Microsoft.Graph.Authentication'
-$null = New-Item -ItemType Directory -Path $mockGraphModule -Force
-'Export-ModuleMember -Function @()' | Set-Content (Join-Path $mockGraphModule 'Microsoft.Graph.Authentication.psm1')
-$env:PSModulePath = "$mockModules$([IO.Path]::PathSeparator)$savedModulePath"
 $commonModule = Import-Module (Join-Path $scripts 'Assessment.Common.psm1') -PassThru
+foreach ($required in Get-AssessmentRequiredModules) {
+    $modulePath = Join-Path $mockModules $required.Name
+    $null = New-Item -ItemType Directory -Path $modulePath -Force
+    'Export-ModuleMember -Function @()' | Set-Content (Join-Path $modulePath "$($required.Name).psm1")
+    New-ModuleManifest -Path (Join-Path $modulePath "$($required.Name).psd1") -RootModule "$($required.Name).psm1" -ModuleVersion $required.MinVersion
+}
+$env:PSModulePath = "$mockModules$([IO.Path]::PathSeparator)$savedModulePath"
 & $commonModule {
     function script:Get-Command {
         [CmdletBinding()]param([string]$Name)
@@ -148,6 +166,34 @@ $commonModule = Import-Module (Join-Path $scripts 'Assessment.Common.psm1') -Pas
 }
 $savedSubscriptionScope = $env:ASSESSMENT_SUBSCRIPTION_IDS
 try {
+    & $commonModule {
+        function script:Get-Module {
+            [CmdletBinding()]param([string]$Name, [switch]$ListAvailable, [switch]$All)
+            $state = $global:AssessmentEntryTest
+            if ($Name -like 'Az.*' -and $state.BlockAzurePrerequisites) {
+                throw 'Entra-only prerequisite validation must not discover Azure modules.'
+            }
+            if ($Name -eq $state.MissingModule) { return }
+            if ($Name -eq $state.OutdatedModule) {
+                return [pscustomobject]@{ Name = $Name; Version = [version]'1.0.0' }
+            }
+            Microsoft.PowerShell.Core\Get-Module @PSBoundParameters
+        }
+    }
+    $global:AssessmentEntryTest.BlockAzurePrerequisites = $true
+    $global:AssessmentEntryTest.MissingModule = $null
+    $global:AssessmentEntryTest.OutdatedModule = $null
+    Assert-AssessmentPrerequisites -IncludeAzure:$false
+    Assert-Entry (@(Get-Module Az.*).Count -eq 0) 'Entra-only prerequisites neither discover nor load Azure modules'
+    $global:AssessmentEntryTest.BlockAzurePrerequisites = $false
+    $global:AssessmentEntryTest.MissingModule = 'Microsoft.Graph.Users'
+    Assert-EntryRejected { Assert-AssessmentPrerequisites -IncludeAzure:$false } '*Microsoft.Graph.Users is missing*AssessmentScope Entra*' 'Missing modules produce a named prerequisite failure and scope-specific setup instruction'
+    $global:AssessmentEntryTest.MissingModule = $null
+    $global:AssessmentEntryTest.OutdatedModule = 'Az.OperationalInsights'
+    Assert-EntryRejected { Assert-AssessmentPrerequisites } '*Az.OperationalInsights 1.0.0 is outdated*' 'Outdated Azure modules are rejected before collection'
+    Assert-Entry ($global:AssessmentEntryTest.AuthCalls.Count -eq 0) 'Prerequisite validation never starts authentication'
+    $global:AssessmentEntryTest.OutdatedModule = $null
+
     $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
     Assert-Entry (-not (Test-Path (Join-Path $repoRoot 'remediation'))) 'Repository ships no tenant-remediation scripts'
 
@@ -250,6 +296,31 @@ try {
 
     $skip = @('01', '02', '03', '04', '05', '06', '07', '08')
     $runner = Join-Path $scripts 'run-all.ps1'
+    $checkRunner = Join-Path $OutputRoot 'check-prerequisites.ps1'
+    @'
+param([string]$ModulePath, [string]$SetupPath)
+$env:PSModulePath = $ModulePath
+& $SetupPath -AssessmentScope Entra -CheckOnly
+'@ | Set-Content $checkRunner
+    Reset-Entry
+    $prereqModulePath = $env:PSModulePath
+    $userModule = Join-Path $mockModules 'Microsoft.Graph.Users'
+    $unavailableUserModule = Join-Path $OutputRoot 'unavailable-user-module'
+    Move-Item -LiteralPath $userModule -Destination $unavailableUserModule
+    try {
+        $env:PSModulePath = "$mockModules$([IO.Path]::PathSeparator)$(Join-Path $PSHOME 'Modules')"
+        Assert-EntryRejected {
+            & $runner -AssessmentScope Entra -OutputDir (Join-Path $OutputRoot 'missing-prerequisites') -Skip $skip -NoOpen
+        } '*Microsoft.Graph.Users is missing*' 'The real entry point stops on missing prerequisites'
+        Assert-Entry ($global:AssessmentEntryTest.AuthCalls.Count -eq 0) 'The real entry point checks prerequisites before any sign-in'
+        $checkOutput = & (Join-Path $PSHOME 'pwsh') -NoLogo -NoProfile -File $checkRunner -ModulePath $env:PSModulePath -SetupPath (Join-Path $scripts '00-prereqs.ps1') 2>&1
+        Assert-Entry ($LASTEXITCODE -ne 0 -and ($checkOutput -join "`n") -like '*Microsoft.Graph.Users is missing*') 'Check-only setup exits nonzero for missing modules without installing them'
+    } finally {
+        Move-Item -LiteralPath $unavailableUserModule -Destination $userModule
+        $env:PSModulePath = $prereqModulePath
+    }
+    $checkOutput = & (Join-Path $PSHOME 'pwsh') -NoLogo -NoProfile -File $checkRunner -ModulePath $env:PSModulePath -SetupPath (Join-Path $scripts '00-prereqs.ps1') 2>&1
+    Assert-Entry ($LASTEXITCODE -eq 0 -and ($checkOutput -join "`n") -like '*[OK]*Prerequisites*') 'Check-only setup succeeds with valid modules and no authentication'
     $flowOutput = Join-Path $OutputRoot 'one-command'
     New-ReportFixture -Destination $flowOutput
     Reset-Entry

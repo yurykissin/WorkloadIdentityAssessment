@@ -1,9 +1,67 @@
 (() => {
   'use strict';
+  const supportedReportFormat = 2;
   const report = JSON.parse(document.getElementById('report-data').textContent);
+  if ((report.ReportFormatVersion || 1) > supportedReportFormat) throw new Error('Unsupported report format. Regenerate with matching report assets.');
+  const atPath = path => path.reduce((value, key) => {
+    if (value == null || !Object.hasOwn(value, key)) throw new Error('Invalid embedded report reference.');
+    return value[key];
+  }, report);
+  for (const [path, original] of report.References || []) {
+    const parent = atPath(path.slice(0, -1));
+    const key = path.at(-1);
+    if (!Object.hasOwn(parent, key) || parent[key] !== null) throw new Error('Invalid embedded report reference destination.');
+    Object.defineProperty(parent, key, { value: atPath(original), enumerable: true, writable: true, configurable: true });
+  }
+  const rawExportElements = [...document.querySelectorAll('[data-raw-export]')];
+  function* rawChunks(id) {
+    const element = rawExportElements.find(item => item.dataset.rawExport === id);
+    if (!element) throw new Error(`Original export ${id} is not embedded.`);
+    const encoded = element.textContent.trim();
+    for (let offset = 0; offset < encoded.length; offset += 65536) {
+      const binary = atob(encoded.slice(offset, offset + 65536));
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+      yield bytes;
+    }
+  }
+  const rawText = id => {
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    const parts = [];
+    for (const chunk of rawChunks(id)) parts.push(decoder.decode(chunk, { stream: true }));
+    parts.push(decoder.decode());
+    return parts.join('');
+  };
+  report.RawData ||= {};
+  for (const id of report.RawDataIds || []) Object.defineProperty(report.RawData, id, {
+    enumerable: true, get: () => JSON.parse(rawText(id))
+  });
   const rows = value => value == null ? [] : Array.isArray(value) ? value : [value];
   const text = value => value == null ? 'Unknown / not collected' : typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value);
   const searchText = value => JSON.stringify(value).toLowerCase();
+  function* jsonParts(value) {
+    if (value == null || typeof value !== 'object') { yield JSON.stringify(value) ?? 'null'; return; }
+    const array = Array.isArray(value);
+    yield array ? '[' : '{';
+    const entries = array ? value.entries() : Object.entries(value).filter(([, item]) => item !== undefined);
+    let first = true;
+    for (const [key, item] of entries) {
+      if (!first) yield ',';
+      first = false;
+      if (!array) yield `${JSON.stringify(key)}:`;
+      yield* jsonParts(item);
+    }
+    yield array ? ']' : '}';
+  }
+  function matchesJson(value, needle) {
+    let tail = '';
+    for (const part of jsonParts(value)) {
+      const chunk = tail + part.toLowerCase();
+      if (chunk.includes(needle)) return true;
+      tail = needle.length > 1 ? chunk.slice(1 - needle.length) : '';
+    }
+    return false;
+  }
   const source = id => report.Sources.find(item => item.Id === id);
   const loaded = id => source(id)?.State === 'Loaded';
   const dataset = (id, field) => loaded(id) ? rows(report.Data[id]?.[field]) : [];
@@ -173,7 +231,6 @@
   function createTable(host, config, title) {
     const allRows = rows(config.Rows).filter(row => row != null);
     const columns = rows(config.Columns);
-    const indexed = allRows.map(row => ({ row, query: searchText(row) }));
     let page = 0;
     let sortKey = null;
     let direction = 1;
@@ -194,9 +251,9 @@
     query.addEventListener('input', () => { page = 0; render(); });
     function render() {
       const needle = query.value.trim().toLowerCase();
-      let matches = indexed.filter(item => (!needle || item.query.includes(needle)) && filters.every(filter =>
-        filter.control.value === '' || text(item.row[filter.field]) === filter.values[Number(filter.control.value)]
-      )).map(item => item.row);
+      let matches = allRows.filter(row => (!needle || matchesJson(row, needle)) && filters.every(filter =>
+        filter.control.value === '' || text(row[filter.field]) === filter.values[Number(filter.control.value)]
+      ));
       if (sortKey) matches = matches.slice().sort((a, b) => direction * text(a[sortKey]).localeCompare(text(b[sortKey]), undefined, { numeric: true }));
       const scroll = node('div', 'table-scroll');
       const table = node('table');
@@ -775,7 +832,31 @@
   sourceTable.append(sourceHead, sourceBody);
   document.getElementById('source-table').append(sourceTable);
   const rawPanel = document.getElementById('raw');
-  rawPanel.querySelector('h2').after(properties({ 'Selected run': report.RunDirectory, 'Embedded datasets': Object.keys(report.RawData).length }));
+  rawPanel.querySelector('h2').after(properties({ 'Selected run': report.RunDirectory, 'Embedded datasets': rawExportElements.length || Object.keys(report.RawData).length }));
+  for (const details of rawPanel.querySelectorAll('[data-raw-id]')) {
+    const id = details.dataset.rawId;
+    const content = details.querySelector('.raw-content');
+    const name = source(id).FileName;
+    content.append(button('Download original JSON', () => {
+      try {
+        const url = URL.createObjectURL(new Blob([...rawChunks(id)], { type: 'application/json' }));
+        const link = node('a');
+        link.href = url;
+        link.download = name;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } catch (error) {
+        content.append(node('p', 'notice', `Could not download the original export: ${error.message}`));
+      }
+    }));
+    details.addEventListener('toggle', () => {
+      const previous = content.querySelector('pre, .raw-error');
+      if (!details.open) { previous?.remove(); return; }
+      if (previous) return;
+      try { content.append(node('pre', '', rawText(id))); }
+      catch (error) { content.append(node('p', 'notice raw-error', `Could not display the original export: ${error.message}. Download the original bytes instead.`)); }
+    });
+  }
   for (const table of document.querySelectorAll('#tenant > table')) {
     const scroll = node('div', 'table-scroll');
     table.replaceWith(scroll);

@@ -16,7 +16,35 @@ function Read-Payload([string]$Path) {
     $html = Get-Content -Raw -LiteralPath $Path
     $match = [regex]::Match($html, '(?s)<script id="report-data" type="application/json">(.*?)</script>')
     Assert-Report $match.Success 'Embedded report data exists'
-    return $match.Groups[1].Value | ConvertFrom-Json -Depth 100
+    $payload = $match.Groups[1].Value | ConvertFrom-Json -Depth 100
+    function Get-EmbeddedValue($Value, [object[]]$Parts) {
+        foreach ($part in $Parts) {
+            if ($Value -is [array]) { $Value = $Value[[int]$part] }
+            else { $Value = $Value.PSObject.Properties[[string]$part].Value }
+        }
+        return ,$Value
+    }
+    foreach ($reference in $payload.References) {
+        $parts = $reference[0]
+        $parent = Get-EmbeddedValue $payload @($parts | Select-Object -SkipLast 1)
+        $value = Get-EmbeddedValue $payload $reference[1]
+        if ($parent -is [array]) { $parent[[int]$parts[-1]] = $value }
+        else { $parent.([string]$parts[-1]) = $value }
+    }
+    $rawData = [pscustomobject]@{}
+    foreach ($rawMatch in [regex]::Matches($html, "<script type='application/octet-stream' data-raw-export='(\d{2})'>(.*?)</script>")) {
+        $id = $rawMatch.Groups[1].Value
+        $bytes = [Convert]::FromBase64String($rawMatch.Groups[2].Value)
+        $name = ($payload.Sources | Where-Object Id -eq $id).FileName
+        $original = [IO.File]::ReadAllBytes((Join-Path $payload.RunDirectory $name))
+        Assert-Report ([Linq.Enumerable]::SequenceEqual[byte]($bytes, $original)) "Original $name embedded byte-for-byte, including malformed or partial exports"
+        if ($id -in $payload.RawDataIds) {
+            $text = [Text.Encoding]::UTF8.GetString($bytes).TrimStart([char]0xfeff)
+            $rawData | Add-Member -MemberType NoteProperty -Name $id -Value ($text | ConvertFrom-Json -Depth 100)
+        }
+    }
+    $payload | Add-Member -NotePropertyName RawData -NotePropertyValue $rawData
+    return $payload
 }
 function Render-Fixture([string]$Name) {
     $folder = Join-Path $OutputRoot $Name
@@ -51,6 +79,9 @@ Assert-Report (@($normal.Sources | Where-Object State -eq 'Loaded').Count -eq 8)
 Assert-Report ($normal.Data.'02'.appRegistrations.Count -eq 3) 'App-registration count retained'
 Assert-Report ($normal.Data.'02'.servicePrincipals.Count -eq 3) 'SP count retained'
 Assert-Report ($normal.Data.'02'.managedIdentities.Count -eq 1) 'MI count retained'
+Assert-Report ([object]::ReferenceEquals($normal.Tables[0].Rows[0], $normal.Data.'03'.Credentials[0])) 'Table rows restore the complete canonical credential rather than a copied or truncated record'
+Assert-Report ([object]::ReferenceEquals(($normal.Findings | Where-Object Id -eq 'WI.PERM.1'), ($normal.Assessment.Results | Where-Object Id -eq 'WI.PERM.1'))) 'Findings and control coverage restore the same complete control result'
+Assert-Report ([object]::ReferenceEquals(($normal.Findings | Where-Object Id -eq 'WI.PERM.1').AffectedRows[0], $normal.Data.'05'.NormalizedPermissions[0])) 'Affected evidence retains every normalized permission field through references'
 $expectedControls = @('WI.REG.1','WI.REG.3','WI.OWN.1','WI.OWN.2','WI.CRED.1','WI.PERM.1')
 Assert-Report (@(Compare-Object ($expectedControls | Sort-Object) ($normal.Findings.Id | Sort-Object)).Count -eq 0) 'Source-backed findings replace unsourced legacy hash baseline with explicit predicates'
 Assert-Report (($normal.Findings | Where-Object Id -eq 'WI.PERM.1').Severity -eq 'High') 'Privileged API grants remain High review candidates'
@@ -342,6 +373,13 @@ foreach ($scenario in @('empty', 'single')) {
 
 $largeFolder = Join-Path $OutputRoot 'large'
 New-ReportFixture -Destination $largeFolder -IdentityCount 550
+$largeInventory = Get-Content -Raw -LiteralPath (Join-Path $largeFolder '02-inventory.json') | ConvertFrom-Json
+$retainedEvidence = ('&<>' * 65536) + "`n`t`"\" + [char]::ConvertFromUtf32(0x1f512) + [char]0x05d0
+$largeInventory.appRegistrations[-1] | Add-Member -NotePropertyName RetainedEvidence -NotePropertyValue $retainedEvidence
+$largeInventory.appRegistrations[-1] | Add-Member -NotePropertyName ReferenceLikeData -NotePropertyValue @{
+    References = @('literal'); '$reportData' = @('02','appRegistrations',0); '__proto__' = @{ Keep = 'literal' }
+}
+Write-Dataset $largeFolder '02-inventory.json' $largeInventory
 $largeCredentials = Get-Content -Raw -LiteralPath (Join-Path $largeFolder '03-credential-hygiene.json') | ConvertFrom-Json
 $largeCredentials.Credentials = @(1..225 | ForEach-Object {
     $record = $largeCredentials.Credentials[0].PSObject.Copy()
@@ -352,7 +390,28 @@ Write-Dataset $largeFolder '03-credential-hygiene.json' $largeCredentials
 $large = Render-Fixture 'large'
 Assert-Report ($large.Data.'02'.appRegistrations.Count -eq 550) 'All identities beyond legacy limits are embedded'
 Assert-Report ($large.Tables[0].Rows.Count -eq 225) 'All credentials beyond legacy limits are embedded'
+Assert-Report ($large.Data.'02'.appRegistrations[-1].RetainedEvidence -ceq $retainedEvidence) 'Long HTML-sensitive, escaped and Unicode fields are streamed without truncation or changed characters'
+Assert-Report ($large.Data.'02'.appRegistrations[-1].ReferenceLikeData.'__proto__'.Keep -eq 'literal' -and $large.Data.'02'.appRegistrations[-1].ReferenceLikeData.'$reportData'.Count -eq 3) 'Tenant fields resembling metadata remain literal exported data, never report references'
 Assert-Report ((Get-Content -Raw -LiteralPath (Join-Path $largeFolder 'report.html')).Contains('Synthetic workload 0550')) 'Last inventory record retained'
+Assert-Report (-not (Get-Content -Raw -LiteralPath (Join-Path $largeFolder 'report.html')).Contains('<pre>')) 'Raw exports are not expanded into giant HTML strings during generation'
+
+$writeFailed = $false
+try {
+    & $renderer -OutputDir $largeFolder -ReportPath (Join-Path $largeFolder '02-inventory.json')
+} catch { $writeFailed = $_.Exception.Message -like '*must not overwrite*' }
+Assert-Report $writeFailed 'Report output cannot overwrite an original assessment export'
+$blockedDestination = Join-Path $largeFolder 'existing-directory'
+$null = New-Item -ItemType Directory -Path $blockedDestination -Force
+$writeFailed = $false
+try { & $renderer -OutputDir $largeFolder -ReportPath $blockedDestination }
+catch { $writeFailed = $true }
+Assert-Report $writeFailed 'A destination write failure is surfaced, not reported as success'
+Assert-Report (@(Get-ChildItem -LiteralPath $largeFolder -Filter '*.tmp').Count -eq 0) 'Failed output replacement cleans up its own incomplete temporary report'
+Push-Location $largeFolder
+try {
+    & $renderer -OutputDir '.' -ReportPath './relative-report.html'
+    Assert-Report (Test-Path -LiteralPath (Join-Path $largeFolder 'relative-report.html')) 'Relative report paths follow PowerShell location, not the process working directory'
+} finally { Pop-Location }
 
 $hostileFolder = Join-Path $OutputRoot 'hostile'
 New-ReportFixture -Destination $hostileFolder -HostileText
@@ -517,5 +576,19 @@ Assert-Report (-not (Test-Path -LiteralPath (Join-Path $portableRoot 'output')))
 $portableReport = Join-Path $portableRoot 'report.html'
 & (Join-Path $portableRoot 'scripts/09-html-report.ps1') -RunDir $normalFolder -ReportPath $portableReport
 Assert-Report ((Read-Payload $portableReport).RunDirectory -eq $normalFolder) 'Absolute RunDir works without a default OutputDir'
+
+$oldPackageHash = (Get-FileHash -LiteralPath $packageReport).Hash
+$packageTemplate = Join-Path $scriptDir.FullName 'report-assets/template.html'
+$currentTemplate = Get-Content -Raw -LiteralPath $packageTemplate
+try {
+    $currentTemplate.Replace('__RAW_EXPORTS__', '') | Set-Content -LiteralPath $packageTemplate -Encoding utf8
+    $rejected = $false
+    try { & (Join-Path $scriptDir.FullName '09-html-report.ps1') -OutputDir $packageOutput -ReportPath $packageReport }
+    catch { $rejected = $_.Exception.Message -like '*assets are outdated*' }
+    Assert-Report $rejected 'Old assets cannot silently create a report missing its original exports'
+    Assert-Report ((Get-FileHash -LiteralPath $packageReport).Hash -eq $oldPackageHash) 'A rejected report build preserves the previous destination byte-for-byte'
+} finally {
+    $currentTemplate | Set-Content -LiteralPath $packageTemplate -Encoding utf8
+}
 
 Write-Host "PASS: $checks report checks. Synthetic reports: $OutputRoot" -ForegroundColor Green

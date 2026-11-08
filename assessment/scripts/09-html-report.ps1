@@ -33,6 +33,9 @@ param(
 
 Set-StrictMode -Version 1.0
 $ErrorActionPreference = 'Stop'
+if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
+    throw 'Offline report generation requires PowerShell FullLanguage mode for its streaming .NET writer. Use an approved workstation; no tenant access is required.'
+}
 
 if (-not $OutputDir) {
     $OutputDir = if ($RunDir -and [IO.Path]::IsPathRooted($RunDir)) {
@@ -140,9 +143,13 @@ $aggregationFields = @{
     '06' = @('TotalFirstPartySPs','Stale90Days','Stale365Days','NeverSignedIn','NoOwner','OrphanedOwner','AppRegMissingTags')
 }
 $data = @{}
-$rawData = @{}
-$sourceText = @{}
+$inputVersions = @{}
+$rawDataIds = [System.Collections.Generic.List[string]]::new()
 $sources = @()
+$reportTimer = [Diagnostics.Stopwatch]::StartNew()
+function Write-ReportStage([string]$Message) {
+    Write-Host ("  [{0:n1}s] {1}" -f $reportTimer.Elapsed.TotalSeconds, $Message)
+}
 $runSummary = $null
 $runSummaryPath = Join-Path $selectedRun 'run-summary.json'
 if (Test-Path -LiteralPath $runSummaryPath) {
@@ -171,11 +178,13 @@ foreach ($id in $scriptIds) {
     }
     if ($files.ContainsKey($id)) {
         $source.FileName = Split-Path -Leaf $files[$id]
+        $inputFile = Get-Item -LiteralPath $files[$id]
+        $inputVersions[$id] = @($inputFile.Length, $inputFile.LastWriteTimeUtc)
+        Write-ReportStage "Reading and validating $($source.FileName)..."
         try {
-            $sourceText[$id] = Get-Content -Raw -LiteralPath $files[$id]
-            $parsed = $sourceText[$id] | ConvertFrom-Json -Depth 100 -NoEnumerate
+            $parsed = Get-Content -Raw -LiteralPath $files[$id] | ConvertFrom-Json -Depth 100 -NoEnumerate
             if (-not (Test-JsonObject $parsed)) { throw 'Expected a JSON object at the top level.' }
-            $rawData[$id] = $parsed
+            $rawDataIds.Add($id)
             $source.CollectedAt = $parsed.PSObject.Properties['CollectedAt'].Value
             $azureExcluded = $parsed.PSObject.Properties['AzureCollected'].Value -is [bool] -and $parsed.AzureCollected -eq $false
             $excludedFields = if ($azureExcluded) {
@@ -216,7 +225,7 @@ foreach ($id in $scriptIds) {
             } else {
                 $source.State = 'Loaded'
                 $source.Message = if ($azureExcluded) { 'Entra export loaded. Azure checks not collected (Entra-only assessment).' } else { 'Export loaded. File presence does not establish complete collection.' }
-                $data[$id] = $parsed | ConvertTo-Json -Depth 100 | ConvertFrom-Json -Depth 100
+                $data[$id] = $parsed
             }
             if ($source.State -eq 'Loaded' -and $collectorResult.Status -eq 'Failed') {
                 $source.State = 'Partial'
@@ -230,6 +239,7 @@ foreach ($id in $scriptIds) {
         }
     }
     $sources += [PSCustomObject]$source
+    $parsed = $null
 }
 
 # ---------------------------------------------------------------------------
@@ -296,8 +306,6 @@ if ($assessmentScope -eq 'Entra') {
     $monitoringSource.State = 'Not collected'
     $monitoringSource.Message = 'Azure monitoring and Key Vault checks were not collected (Entra-only assessment).'
     $data['07'] = $null
-    $rawData.Remove('07')
-    $sourceText.Remove('07')
 }
 $azureScopeNotice = "<p class='notice'>Azure checks not collected (Entra-only assessment).</p>"
 
@@ -305,7 +313,9 @@ $azureScopeNotice = "<p class='notice'>Azure checks not collected (Entra-only as
 # Offline, source-backed workload control evaluation
 # ---------------------------------------------------------------------------
 Import-Module (Join-Path $PSScriptRoot 'Assessment.Controls.psm1') -Force -ErrorAction Stop
+Write-ReportStage 'Normalizing the complete snapshot...'
 ConvertTo-WorkloadSnapshot -Data $data
+Write-ReportStage 'Evaluating workload controls...'
 $assessment = Invoke-WorkloadControls -Data $data
 $findings = [System.Collections.Generic.List[object]]::new()
 foreach ($result in $assessment.Results) {
@@ -318,6 +328,7 @@ $d5 = $data['05']; $d6 = $data['06']; $d7 = $data['07']; $d8 = $data['08']
 # Build HTML
 # ---------------------------------------------------------------------------
 $sb = [System.Text.StringBuilder]::new()
+Write-ReportStage 'Building report views (raw exports are embedded without HTML expansion)...'
 
 # Header
 $tenantName = if ($d1) { Get-Prop (Get-Prop $d1 'TenantInfo') 'DisplayName' } else { 'Unknown' }
@@ -610,10 +621,10 @@ if ($d8) {
 # Raw JSON
 $rawHtml = [System.Text.StringBuilder]::new()
 foreach ($id in $scriptIds) {
-    if ($sourceText.ContainsKey($id)) {
+    if ($files.ContainsKey($id)) {
         $name = Split-Path -Leaf $files[$id]
-        $raw = $sourceText[$id]
-        [void]$rawHtml.Append("<details><summary>$(HE $name) ($([math]::Round($raw.Length/1024, 1)) KB)</summary><pre>$(HE $raw)</pre></details>")
+        $size = (Get-Item -LiteralPath $files[$id]).Length
+        [void]$rawHtml.Append("<details data-raw-id='$id'><summary>$(HE $name) ($([math]::Round($size/1024, 1)) KB)</summary><div class='raw-content'></div></details>")
     }
 }
 [void]$sb.Append((Section 'raw' 'Raw data' $rawHtml.ToString()))
@@ -625,37 +636,215 @@ foreach ($source in $sources) {
     }
 }
 
-$payload = @{
+$payload = [ordered]@{
+    ReportFormatVersion = 2
     GeneratedAt = (Get-Date).ToUniversalTime().ToString('o')
     AssessmentScope = $assessmentScope
     RunDirectory = $selectedRun
     Sources = @($sources)
     Data = $data
-    RawData = $rawData
+    RawDataIds = $rawDataIds.ToArray()
     Findings = $findings.ToArray()
     Assessment = $assessment
     Tables = $tables.ToArray()
 }
-# Escape all markup delimiters so JSON cannot close its script element.
-$json = ($payload | ConvertTo-Json -Depth 100 -Compress).Replace('&', '\u0026').Replace('<', '\u003c').Replace('>', '\u003e')
 $assetDir = Join-Path $PSScriptRoot 'report-assets'
 $template = Get-Content -Raw -LiteralPath (Join-Path $assetDir 'template.html')
 $replacements = @{
     '__STYLES__' = Get-Content -Raw -LiteralPath (Join-Path $assetDir 'styles.css')
     '__APP_JS__' = Get-Content -Raw -LiteralPath (Join-Path $assetDir 'app.js')
-    '__DATA_JSON__' = $json
     '__PANELS__' = $sb.ToString()
 }
-# One replacement pass: tenant values containing token text remain literal.
-$html = [regex]::Replace($template, '__(?:STYLES|APP_JS|DATA_JSON|PANELS)__', [System.Text.RegularExpressions.MatchEvaluator]{
-    param($match)
-    return $replacements[$match.Value]
-})
+if ([regex]::Matches($template, '__RAW_EXPORTS__').Count -ne 1 -or
+    -not $replacements['__APP_JS__'].Contains('const supportedReportFormat = 2;')) {
+    throw 'Report assets are outdated. Update 09-html-report.ps1, report-assets/template.html and report-assets/app.js together.'
+}
 
 # ---------------------------------------------------------------------------
-# Write
+# Stream JSON and raw bytes; never allocate a complete HTML/JSON output string.
 # ---------------------------------------------------------------------------
-$html | Set-Content -LiteralPath $ReportPath -Encoding UTF8
+if (-not ('WorkloadReport.StreamingJson' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Management.Automation;
+using System.Text.Encodings.Web;
+using System.Text.Json;
+
+namespace WorkloadReport {
+    public sealed class StreamingJson {
+        private readonly Dictionary<object, object[]> seen =
+            new Dictionary<object, object[]>(ReferenceEqualityComparer.Instance);
+        private readonly List<object[]> references = new List<object[]>();
+        private readonly List<object> path = new List<object>();
+
+        private static void String(TextWriter writer, string value) {
+            writer.Write('"');
+            JavaScriptEncoder.Default.Encode(writer, value);
+            writer.Write('"');
+        }
+
+        public static void Write(TextWriter writer, IDictionary payload) {
+            var serializer = new StreamingJson();
+            writer.Write('{');
+            foreach (DictionaryEntry property in payload) {
+                string key = (string)property.Key;
+                String(writer, key);
+                writer.Write(':');
+                serializer.path.Add(key);
+                serializer.Value(writer, property.Value, 0);
+                serializer.path.RemoveAt(serializer.path.Count - 1);
+                writer.Write(',');
+            }
+            writer.Write("\"References\":[");
+            bool first = true;
+            foreach (var reference in serializer.references) {
+                if (!first) writer.Write(',');
+                first = false;
+                writer.Write(JsonSerializer.Serialize(reference));
+            }
+            writer.Write("]}");
+        }
+
+        private void Value(TextWriter writer, object value, int depth) {
+            if (depth > 100) throw new InvalidDataException("Report JSON exceeds the supported depth of 100.");
+            var ps = value as PSObject;
+            if (ps != null && !(ps.BaseObject is PSCustomObject)) value = ps.BaseObject;
+            if (value == null) { writer.Write("null"); return; }
+            switch (value) {
+                case string s: String(writer, s); return;
+                case char c: String(writer, c.ToString()); return;
+                case bool b: writer.Write(b ? "true" : "false"); return;
+                case DateTime date: String(writer, date.ToString("o", CultureInfo.InvariantCulture)); return;
+                case DateTimeOffset date: String(writer, date.ToString("o", CultureInfo.InvariantCulture)); return;
+                case Guid guid: String(writer, guid.ToString()); return;
+                case byte n: writer.Write(n.ToString(CultureInfo.InvariantCulture)); return;
+                case sbyte n: writer.Write(n.ToString(CultureInfo.InvariantCulture)); return;
+                case short n: writer.Write(n.ToString(CultureInfo.InvariantCulture)); return;
+                case ushort n: writer.Write(n.ToString(CultureInfo.InvariantCulture)); return;
+                case int n: writer.Write(n.ToString(CultureInfo.InvariantCulture)); return;
+                case uint n: writer.Write(n.ToString(CultureInfo.InvariantCulture)); return;
+                case long n: writer.Write(n.ToString(CultureInfo.InvariantCulture)); return;
+                case ulong n: writer.Write(n.ToString(CultureInfo.InvariantCulture)); return;
+                case float n: writer.Write(JsonSerializer.Serialize(n)); return;
+                case double n: writer.Write(JsonSerializer.Serialize(n)); return;
+                case decimal n: writer.Write(n.ToString(CultureInfo.InvariantCulture)); return;
+            }
+            if (seen.TryGetValue(value, out var original)) {
+                // Paths restore shared records without repeating their full contents.
+                references.Add(new object[] { path.ToArray(), original });
+                writer.Write("null");
+                return;
+            }
+            seen.Add(value, path.ToArray());
+            if (value is IDictionary dictionary) {
+                writer.Write('{');
+                bool first = true;
+                foreach (DictionaryEntry property in dictionary) {
+                    if (!first) writer.Write(',');
+                    first = false;
+                    string key = Convert.ToString(property.Key, CultureInfo.InvariantCulture);
+                    String(writer, key);
+                    writer.Write(':');
+                    path.Add(key);
+                    Value(writer, property.Value, depth + 1);
+                    path.RemoveAt(path.Count - 1);
+                }
+                writer.Write('}');
+            } else if (value is IEnumerable collection) {
+                writer.Write('[');
+                int index = 0;
+                foreach (object item in collection) {
+                    if (index > 0) writer.Write(',');
+                    path.Add(index++);
+                    Value(writer, item, depth + 1);
+                    path.RemoveAt(path.Count - 1);
+                }
+                writer.Write(']');
+            } else if (ps != null && ps.BaseObject is PSCustomObject) {
+                writer.Write('{');
+                bool first = true;
+                foreach (PSPropertyInfo property in ps.Properties) {
+                    if (!first) writer.Write(',');
+                    first = false;
+                    String(writer, property.Name);
+                    writer.Write(':');
+                    path.Add(property.Name);
+                    Value(writer, property.Value, depth + 1);
+                    path.RemoveAt(path.Count - 1);
+                }
+                writer.Write('}');
+            } else {
+                throw new InvalidDataException("Unsupported report value: " + value.GetType().FullName);
+            }
+        }
+    }
+}
+'@
+}
+$reportFullPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ReportPath)
+foreach ($file in $files.Values) {
+    if ($reportFullPath -eq [IO.Path]::GetFullPath($file)) {
+        throw 'ReportPath must not overwrite an assessment export.'
+    }
+}
+$temporaryReport = $reportFullPath + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+try {
+    $stream = [IO.File]::Open($temporaryReport, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    $writer = $null
+    try {
+        $writer = [IO.StreamWriter]::new($stream, [Text.UTF8Encoding]::new($false), 65536, $true)
+        $position = 0
+        foreach ($match in [regex]::Matches($template, '__(?:STYLES|APP_JS|DATA_JSON|RAW_EXPORTS|PANELS)__')) {
+            $writer.Write($template.Substring($position, $match.Index - $position))
+            switch ($match.Value) {
+                '__DATA_JSON__' {
+                    Write-ReportStage 'Streaming all records, findings and control evidence...'
+                    [WorkloadReport.StreamingJson]::Write($writer, $payload)
+                }
+                '__RAW_EXPORTS__' {
+                    foreach ($id in $scriptIds) {
+                        if (-not $files.ContainsKey($id)) { continue }
+                        $currentFile = Get-Item -LiteralPath $files[$id]
+                        if ($currentFile.Length -ne $inputVersions[$id][0] -or $currentFile.LastWriteTimeUtc -ne $inputVersions[$id][1]) {
+                            throw "Export [$id] changed during report generation. Use a completed snapshot and rerun the report."
+                        }
+                        Write-ReportStage "Embedding original export [$id] byte-for-byte..."
+                        $writer.Write("<script type='application/octet-stream' data-raw-export='$id'>")
+                        $writer.Flush()
+                        $inputStream = $null; $transform = $null; $encoder = $null
+                        try {
+                            $inputStream = [IO.File]::OpenRead($files[$id])
+                            $transform = [Security.Cryptography.ToBase64Transform]::new()
+                            $encoder = [Security.Cryptography.CryptoStream]::new($stream, $transform, [Security.Cryptography.CryptoStreamMode]::Write, $true)
+                            $inputStream.CopyTo($encoder)
+                        } finally {
+                            try { if ($encoder) { $encoder.Dispose() } }
+                            finally {
+                                if ($transform) { $transform.Dispose() }
+                                if ($inputStream) { $inputStream.Dispose() }
+                            }
+                        }
+                        $writer.Write('</script>')
+                    }
+                }
+                default { $writer.Write($replacements[$match.Value]) }
+            }
+            $position = $match.Index + $match.Length
+        }
+        $writer.Write($template.Substring($position))
+    } finally {
+        try { if ($writer) { $writer.Dispose() } }
+        finally { $stream.Dispose() }
+    }
+    [IO.File]::Move($temporaryReport, $reportFullPath, $true)
+} finally {
+    if (Test-Path -LiteralPath $temporaryReport) { Remove-Item -LiteralPath $temporaryReport }
+}
+Write-ReportStage 'Report written successfully.'
 
 Write-Host ""
 Write-Host "═══════════════════════════════════════════════════════════════"

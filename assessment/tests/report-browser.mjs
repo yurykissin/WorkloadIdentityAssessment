@@ -415,11 +415,30 @@ try {
   await largeTable.getByRole('button', { name: 'Credential Display Name', exact: true }).click();
   await largeTable.getByRole('button', { name: 'Credential Display Name', exact: true }).click();
   check((await largeTable.locator('tbody tr').first().innerText()).includes('0225'), 'Table sorting operates on the complete dataset');
+  await tab('controls');
+  const controlSearch = page.getByRole('searchbox', { name: 'Control coverage: search all exported fields', exact: true });
+  await controlSearch.fill('"CredentialDisplayName":"Synthetic credential 0225"');
+  check(await page.locator('#control-coverage tbody').innerText().then(value => value.includes('WI.CRED.1')), 'Bounded-memory table search still spans JSON chunk boundaries and reaches nested tail evidence');
+  await controlSearch.fill('no-such-retained-evidence');
+  check(await page.locator('#control-coverage tbody tr').count() === 0, 'Evidence search has an honest no-match state without retaining full serialized control records');
+  await controlSearch.fill('');
   await tab('raw');
+  check(await page.locator('#raw pre').count() === 0, 'Raw exports are not eagerly decoded or expanded into browser DOM');
   await page.locator('#raw summary').filter({ hasText: '02-inventory.json' }).click();
+  await page.locator('#raw details[open] pre').waitFor();
   const originalJson = await readFile(join(root, 'large/02-inventory.json'), 'utf8');
   check(originalJson.length > 200000, 'Large fixture exceeds the legacy raw JSON size limit');
   check(await page.locator('#raw details[open] pre').textContent() === originalJson, 'Raw JSON is complete and unchanged beyond the old truncation limit');
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.locator('#raw details[open]').getByRole('button', { name: 'Download original JSON', exact: true }).click()
+  ]);
+  check(download.suggestedFilename() === '02-inventory.json' &&
+    (await readFile(await download.path())).equals(await readFile(join(root, 'large/02-inventory.json'))),
+    'Original JSON download preserves every byte without a server or source folder');
+  await page.locator('#raw summary').filter({ hasText: '02-inventory.json' }).click();
+  await page.waitForFunction(() => document.querySelectorAll('#raw pre').length === 0);
+  check(await page.locator('#raw pre').count() === 0, 'Closing a raw export releases its expanded text without removing its embedded data');
 
   for (const scenario of ['empty', 'single', 'single-object', 'partial', 'absent', 'invalid-shape']) {
     await open(scenario);

@@ -35,7 +35,7 @@ Resource Manager endpoints only.
 | Microsoft Graph PowerShell modules | All seven modules below, each **2.15.0+**; installed via `00-prereqs.ps1`. |
 | Az PowerShell modules | **Entra + Azure only**; names and minimum versions below. |
 | `Microsoft.Graph` scopes (delegated, signed in interactively) | `Application.Read.All`, `Directory.Read.All`, `Policy.Read.All`, `AuditLog.Read.All`, `IdentityRiskEvent.Read.All`, `RoleManagement.Read.Directory`, `CrossTenantInformation.ReadBasic.All` |
-| Tenant access and consent | Sign in to the assessed tenant. The delegated scopes need administrator consent; granting consent is separate from running this read-only assessment. Role-protected reports and policies also require supported user roles, such as Security Reader. Consent alone does not grant the signed-in user a directory role. |
+| Tenant access and consent | Sign in to the assessed tenant. The delegated scopes need administrator consent; granting consent is separate from running this read-only assessment. Role-protected reports and policies also require API-specific supported user roles. For the admin consent request policy, the read-only option is **Global Reader**, not Security Reader (see below). Consent alone does not grant the signed-in user a directory role. |
 | Azure RBAC | **Entra + Azure only:** `Reader` on each subscription in scope. Both SDK contexts must target the same tenant. Key Vault configuration is inventoried via Resource Graph; no secret/key-value access or Key Vault data-plane role is needed. |
 | Network | Setup: PowerShell Gallery (`https://www.powershellgallery.com`) and its package download endpoints. Collection: Microsoft authentication and Graph endpoints for the selected cloud; Azure authentication/Resource Manager endpoints for Entra + Azure. Proxies/firewalls must permit these SDK calls. |
 | Local files | Use a writable output folder and retain the complete downloaded repository, including `assessment/controls` and `assessment/scripts/report-assets`. Exports and transcripts contain tenant information. |
@@ -72,6 +72,25 @@ have UTF-8 encoding markers and a PowerShell 7.2 version requirement, so Windows
 PowerShell reports the unsupported version instead of misleading parse errors.
 Tenant permissions, licensing and remote connectivity can only be established
 after sign-in; collection failures/unavailable evidence remain visible.
+
+### Admin consent policy access (403)
+
+The [admin consent request policy read API](https://learn.microsoft.com/graph/api/adminconsentrequestpolicy-get?view=graph-rest-1.0)
+requires `Policy.Read.All` (least privileged; `Directory.Read.All` is also
+supported). For **delegated** access, Microsoft additionally lists **Global Reader**,
+Cloud Application Administrator, Application Administrator, or a custom role with
+the required permissions. **Security Reader is not listed for this operation.**
+Use an appropriately authorized account. No write scope or application-admin role is needed
+when Global Reader provides the required read access.
+
+A 403 can occur even after all requested scopes were consented. Verify the
+signed-in user's applicable role and consent/token scopes; the response alone
+does not establish which requirement failed. The collector continues with the
+other tenant checks, emits an actionable warning, and exports
+`AdminConsentPolicy.State=Unavailable` with `IsEnabled=null`. The report marks
+the workflow control **Not assessed**, not disabled or compliant. The run summary
+shows an unknown value rather than `NO`. The read-only toolkit never grants or
+activates roles or changes the policy.
 
 ## Layout
 
@@ -456,6 +475,22 @@ Keep `scripts/report-assets/`, `scripts/Assessment.Controls.psm1` and
 a report. The resulting **single HTML file** can then be moved or shared alone
 and opened through `file://`. It has no external fonts, scripts, styles,
 telemetry or runtime requests. JavaScript must be enabled in the browser.
+
+Report generation streams output to disk instead of constructing a complete
+HTML/JSON string in memory. Shared records in findings, tables and control
+coverage are stored once and restored by the offline viewer; **no rows, fields
+or evidence are dropped or capped**. Every original export (including partial
+or unreadable files) is embedded byte-for-byte. The Raw data view displays an
+export on demand and provides **Download original JSON**. Closing that view's
+export releases its expanded text without removing the embedded file.
+Elapsed-time stage messages identify loading, evaluation, serialization and
+raw-file embedding. The destination is replaced only after a successful write.
+Use the updated `09-html-report.ps1`, `report-assets/template.html` and
+`report-assets/app.js` together; no recollection or sign-in is needed.
+The streaming .NET writer requires PowerShell **FullLanguage** mode; use an
+approved workstation if application-control policy restricts the current host.
+Streaming reduces output-building allocations, but evaluating a snapshot and
+using its interactive browser views still requires memory for its records.
 
 ### Report views
 

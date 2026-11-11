@@ -494,6 +494,17 @@ if (-not `$EntraOnly) { throw 'Mixed collector must receive EntraOnly.' }
     Assert-Entry ((Test-Path (Join-Path $scopedFixtureOutput 'report.html')) -and $global:AssessmentEntryTest.AuthCalls.Count -eq 1 -and $global:AssessmentEntryTest.AzureResets.Count -eq 0) 'Entra-only orchestration produces a real offline report without any Azure authentication'
     $scopeTranscript = Get-Content -Raw (Join-Path $entraOutput 'transcript.txt')
     Assert-Entry ($scopeTranscript -like '*1. Entra only*' -and $scopeTranscript -like '*Signing in to Microsoft Graph*' -and $scopeTranscript -like '*PowerShell transcript end*') 'Transcript capture starts before the scope menu and includes authentication'
+    Reset-Entry
+    $deniedConsentOutput = Join-Path $OutputRoot 'consent-denied'
+    New-ReportFixture -Destination $deniedConsentOutput
+    $tenantContextPath = Join-Path $deniedConsentOutput '01-tenant-context.json'
+    $tenantContext = Get-Content -Raw $tenantContextPath | ConvertFrom-Json
+    $tenantContext.AdminConsentPolicy = [pscustomobject]@{ State = 'Unavailable'; Error = 'CouldNotFetch'; IsEnabled = $null }
+    $tenantContext | ConvertTo-Json -Depth 50 | Set-Content $tenantContextPath
+    & $runner -AssessmentScope EntraAndAzure -OutputDir $deniedConsentOutput -Skip $skip -NoOpen
+    $consentSummary = Get-Content -Raw (Join-Path $deniedConsentOutput 'run-summary.json') | ConvertFrom-Json
+    $consentMarkdown = Get-Content -Raw (Join-Path $deniedConsentOutput 'run-summary.md')
+    Assert-Entry ($null -eq $consentSummary.Metrics.AdminConsentWorkflow -and $consentMarkdown.Contains('| Admin consent workflow enabled | — |')) 'Denied consent policy remains unknown in JSON and Markdown summaries, never NO'
     Write-Host "PASS: $checks entry-point checks. Authentication and browser opening were mocked; report generation was real." -ForegroundColor Green
 } finally {
     Stop-AssessmentCollection

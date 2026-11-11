@@ -29,6 +29,9 @@ Reader access are required only for **Entra + Azure**. Installation needs intern
 access to PowerShell Gallery; collection needs Microsoft Graph and, when selected,
 Azure endpoints. Optional premium/preview evidence has additional access and
 licensing requirements.
+For delegated admin consent policy collection, **Global Reader** is the supported
+read-only role; Security Reader alone is not listed for that API. See
+[admin consent policy access and 403 handling](assessment/README.md#admin-consent-policy-access-403).
 
 From the repository root:
 

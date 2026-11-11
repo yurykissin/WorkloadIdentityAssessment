@@ -354,7 +354,7 @@ function Write-ConsolidatedSummary {
     )
 
     function Val([string]$k) { if ($Summary.ContainsKey($k) -and $null -ne $Summary[$k]) { $Summary[$k] } else { '—' } }
-    function YN([string]$k)  { if ($Summary[$k] -is [string] -and $Summary[$k] -eq 'Not collected') { 'Not collected' } elseif ($Summary.ContainsKey($k)) { if ($Summary[$k]) { 'YES' } else { 'NO' } } else { '—' } }
+    function YN([string]$k)  { if (-not $Summary.ContainsKey($k) -or $null -eq $Summary[$k]) { '—' } elseif ($Summary[$k] -is [string] -and $Summary[$k] -eq 'Not collected') { 'Not collected' } elseif ($Summary[$k]) { 'YES' } else { 'NO' } }
 
     $lines = [System.Collections.Generic.List[string]]::new()
 

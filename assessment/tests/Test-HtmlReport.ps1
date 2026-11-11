@@ -86,6 +86,18 @@ $expectedControls = @('WI.REG.1','WI.REG.3','WI.OWN.1','WI.OWN.2','WI.CRED.1','W
 Assert-Report (@(Compare-Object ($expectedControls | Sort-Object) ($normal.Findings.Id | Sort-Object)).Count -eq 0) 'Source-backed findings replace unsourced legacy hash baseline with explicit predicates'
 Assert-Report (($normal.Findings | Where-Object Id -eq 'WI.PERM.1').Severity -eq 'High') 'Privileged API grants remain High review candidates'
 Assert-Report (@($normal.Findings | Where-Object { -not $_.SourceUrl -or -not $_.AffectedRows.Count }).Count -eq 0) 'Every finding has a source and affected evidence'
+$deniedConsentFolder = Join-Path $OutputRoot 'consent-denied'
+New-ReportFixture -Destination $deniedConsentFolder
+$deniedConsentData = Get-Content -Raw (Join-Path $deniedConsentFolder '01-tenant-context.json') | ConvertFrom-Json
+$deniedConsentData.AdminConsentPolicy = [pscustomobject]@{
+    State = 'Unavailable'; Error = 'CouldNotFetch'; IsEnabled = $null
+    Message = 'Synthetic 403 Forbidden. Delegated consent policy access requires Global Reader or another supported role.'
+}
+Write-Dataset $deniedConsentFolder '01-tenant-context.json' $deniedConsentData
+$deniedConsentReport = Render-Fixture 'consent-denied'
+Assert-Report (($deniedConsentReport.Assessment.Results | Where-Object Id -eq 'WI.REG.3').Outcome -eq 'Not assessed' -and @($deniedConsentReport.Findings | Where-Object Id -eq 'WI.REG.3').Count -eq 0) 'Denied consent policy evidence neither passes nor produces a disabled-workflow finding'
+$deniedConsentHtml = Get-Content -Raw (Join-Path $deniedConsentFolder 'report.html')
+Assert-Report ($deniedConsentHtml.Contains('Not assessed (policy unavailable)') -and $deniedConsentHtml.Contains('Synthetic 403 Forbidden')) 'Tenant presentation explicitly shows unavailable consent policy and its diagnostic'
 $normalHtml = Get-Content -LiteralPath (Join-Path $normalFolder 'report.html') -Raw
 Assert-Report ($normalHtml.Contains("aria-label='Assessment findings'") -and [regex]::Matches($normalHtml, "class='finding-details' id='finding-details-\d+' hidden").Count -eq $normal.Findings.Count) 'Every rendered finding has a summary-table row group and initially collapsed details'
 Assert-Report ([regex]::Matches($normalHtml, "<details class='finding-sources'><summary>Sources and rationale \(\d+\)</summary>").Count -eq $normal.Findings.Count -and $normalHtml.Contains("<details class='finding-methodology'>")) 'Source references and the full methodology use native disclosures rather than always-expanded link paragraphs'

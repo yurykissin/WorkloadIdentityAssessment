@@ -420,9 +420,16 @@ if ($d1) {
         [void]$body.Append("<div class='k'>Users can create tenants</div><div class='v'>$(HE (Get-Prop $auth 'AllowedToCreateTenants'))</div>")
         [void]$body.Append("<div class='k'>Users can create security groups</div><div class='v'>$(HE (Get-Prop $auth 'AllowedToCreateSecurityGroups'))</div>")
         if ($consent) {
-            [void]$body.Append("<div class='k'>Admin consent workflow enabled</div><div class='v'>$(HE (Get-Prop $consent 'IsEnabled'))</div>")
+            $consentEnabled = Get-Prop $consent 'IsEnabled'
+            $consentStatus = if ($consentEnabled -is [bool]) { $consentEnabled } else { 'Not assessed (policy unavailable)' }
+            [void]$body.Append("<div class='k'>Admin consent workflow enabled</div><div class='v'>$(HE $consentStatus)</div>")
         }
         [void]$body.Append("</div>")
+        if ($consent -and $consentEnabled -isnot [bool]) {
+            $consentMessage = Get-Prop $consent 'Message'
+            if (-not $consentMessage) { $consentMessage = Get-Prop $consent 'Error' }
+            if ($consentMessage) { [void]$body.Append("<p class='notice'>$(HE $consentMessage)</p>") }
+        }
     }
 
     if ($rmc) {

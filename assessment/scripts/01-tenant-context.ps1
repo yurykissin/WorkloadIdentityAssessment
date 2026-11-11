@@ -173,6 +173,38 @@ function Assert-GraphContext {
     }
 }
 
+function Get-AdminConsentPolicy {
+    [CmdletBinding()]
+    param()
+
+    try {
+        $policy = Invoke-WithRetry { Get-MgPolicyAdminConsentRequestPolicy -ErrorAction Stop }
+        if ($null -eq $policy -or $policy.IsEnabled -isnot [bool]) {
+            throw 'Graph returned no admin consent policy with a known isEnabled value.'
+        }
+        return @{
+            State                 = 'Available'
+            IsEnabled             = $policy.IsEnabled
+            NotifyReviewers       = $policy.NotifyReviewers
+            RemindersEnabled      = $policy.RemindersEnabled
+            RequestDurationInDays = $policy.RequestDurationInDays
+            Reviewers             = @($policy.Reviewers)
+        }
+    } catch {
+        $message = "Could not read admin consent request policy: $($_.Exception.Message) " +
+            'This check is unavailable, not evidence that the workflow is disabled. ' +
+            'The API requires Policy.Read.All (or Directory.Read.All). Delegated access also requires Global Reader, Cloud Application Administrator, Application Administrator, or an appropriately permitted custom role. ' +
+            'See https://learn.microsoft.com/graph/api/adminconsentrequestpolicy-get?view=graph-rest-1.0'
+        Write-Warning $message
+        return @{
+            State     = 'Unavailable'
+            Error     = 'CouldNotFetch'
+            Message   = $message
+            IsEnabled = $null
+        }
+    }
+}
+
 function Get-RoleMemberCount {
     [CmdletBinding()]
     param([string]$TemplateId, [string]$RoleName)
@@ -317,25 +349,12 @@ function Invoke-TenantContext {
 
     # ── 4. Admin consent request policy ──────────────────────────────────────
     Write-Host "  Fetching admin consent request policy..." -NoNewline
-    $consentPolicy = $null
-    try {
-        $consentPolicy = Invoke-WithRetry { Get-MgPolicyAdminConsentRequestPolicy }
-    } catch {
-        Write-Warning "Could not fetch admin consent request policy: $_"
-    }
-
-    $consentPolicyResult = if ($consentPolicy) {
-        @{
-            IsEnabled   = $consentPolicy.IsEnabled
-            NotifyReviewers = $consentPolicy.NotifyReviewers
-            RemindersEnabled = $consentPolicy.RemindersEnabled
-            RequestDurationInDays = $consentPolicy.RequestDurationInDays
-            Reviewers = @($consentPolicy.Reviewers)
-        }
+    $consentPolicyResult = Get-AdminConsentPolicy
+    if ($consentPolicyResult.State -eq 'Available') {
+        Write-Host " done." -ForegroundColor Green
     } else {
-        @{ Error = 'CouldNotFetch' }
+        Write-Host " unavailable (not assessed)." -ForegroundColor Yellow
     }
-    Write-Host " done." -ForegroundColor Green
 
     # ── 5. Cross-tenant access policy defaults ────────────────────────────────
     Write-Host "  Fetching cross-tenant access policy defaults..." -NoNewline
@@ -472,6 +491,8 @@ function Invoke-TenantContext {
 
     $csvRows.Add([PSCustomObject]@{ Key = 'UsersCanRegisterApps';       Value = $authPolicyResult.AllowedToCreateApps })
     $csvRows.Add([PSCustomObject]@{ Key = 'AdminConsentWorkflowEnabled'; Value = $consentPolicyResult.IsEnabled })
+    $csvRows.Add([PSCustomObject]@{ Key = 'AdminConsentPolicyState'; Value = $consentPolicyResult.State })
+    $csvRows.Add([PSCustomObject]@{ Key = 'AdminConsentPolicyMessage'; Value = $consentPolicyResult.Message })
 
     foreach ($roleName in $roleResults.Keys) {
         $csvRows.Add([PSCustomObject]@{ Key = "RoleMemberCount_$roleName"; Value = $roleResults[$roleName].MemberCount })
@@ -516,7 +537,8 @@ function Invoke-TenantContext {
     Write-Host ""
     Write-Host "  Authorization Policy:" -ForegroundColor White
     Write-Host "    Users can register apps  : $($authPolicyResult.AllowedToCreateApps)"
-    Write-Host "    Admin consent workflow   : $($consentPolicyResult.IsEnabled)"
+    $consentWorkflowStatus = if ($null -ne $consentPolicyResult.IsEnabled) { $consentPolicyResult.IsEnabled } else { 'Not assessed (policy unavailable)' }
+    Write-Host "    Admin consent workflow   : $consentWorkflowStatus"
     Write-Host ""
     Write-Host "  Role Member Counts:" -ForegroundColor White
     foreach ($roleName in $roleResults.Keys) {

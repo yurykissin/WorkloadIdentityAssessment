@@ -265,8 +265,16 @@ function Get-NormalizedPermissions {
     param([object[]]$ApplicationGrants)
     $apps = @(Get-AssessmentDirectoryData -Resource applications -Relationship owners)
     $sps = @(Get-AssessmentDirectoryData -Resource servicePrincipals -Relationship appRoleAssignments)
-    $resources = @{}; $clients = @{}; $appByClient = @{}
-    foreach ($sp in $sps) { if ($sp.Id) { $resources[$sp.Id] = $sp }; if ($sp.AppId) { $clients[$sp.AppId] = $sp } }
+    $resources = @{}; $resourcesByAppId = @{}; $clients = @{}; $appByClient = @{}
+    foreach ($sp in $sps) {
+        if ($sp.Id) { $resources[$sp.Id] = $sp }
+        if ($sp.AppId) {
+            $clients[$sp.AppId] = $sp
+            if (-not $resourcesByAppId.ContainsKey($sp.AppId)) {
+                $resourcesByAppId[$sp.AppId] = $sp
+            }
+        }
+    }
     foreach ($app in $apps) { if ($app.AppId) { $appByClient[$app.AppId] = $app } }
     $result = [System.Collections.Generic.List[object]]::new()
     foreach ($grant in $ApplicationGrants) { $result.Add($grant) }
@@ -291,16 +299,27 @@ function Get-NormalizedPermissions {
             })
         }
     }
+    $existingPermissions = @{}
+    foreach ($row in $result) {
+        if (-not $row.SpObjectId) { continue }
+        $key = "$($row.SpObjectId)|$($row.ResourceAppId)|$($row.PermissionType)|$($row.AppRoleId)"
+        $existingPermissions[$key] = $true
+    }
     $configured = @{}
     foreach ($app in $apps) {
         foreach ($api in $app.RequiredResourceAccess) {
-            $resource = $sps | Where-Object AppId -eq $api.ResourceAppId | Select-Object -First 1
+            $resource = if ($api.ResourceAppId -and $resourcesByAppId.ContainsKey($api.ResourceAppId)) {
+                $resourcesByAppId[$api.ResourceAppId]
+            } else {
+                $null
+            }
             foreach ($permission in $api.ResourceAccess) {
                 $type = if ($permission.Type -eq 'Role') { 'Application' } else { 'Delegated' }
                 $key = "$($app.AppId)|$($api.ResourceAppId)|$type|$($permission.Id)"
                 $configured[$key] = $true
                 $client = if ($app.AppId) { $clients[$app.AppId] } else { $null }
-                if ($client.Id -and @($result | Where-Object { $_.SpObjectId -eq $client.Id -and $_.ResourceAppId -eq $api.ResourceAppId -and $_.PermissionType -eq $type -and $_.AppRoleId -eq $permission.Id }).Count) { continue }
+                $existingKey = "$($client.Id)|$($api.ResourceAppId)|$type|$($permission.Id)"
+                if ($client.Id -and $existingPermissions.ContainsKey($existingKey)) { continue }
                 $definition = if ($type -eq 'Application') { $resource.AppRoles | Where-Object Id -eq $permission.Id | Select-Object -First 1 } else {
                     $resource.Oauth2PermissionScopes | Where-Object Id -eq $permission.Id | Select-Object -First 1
                 }
@@ -313,6 +332,7 @@ function Get-NormalizedPermissions {
                     ConsentStatus = if ($type -eq 'Delegated' -and $delegated.State -ne 'Available') { 'Unknown' } else { 'Not granted in snapshot' }
                     ConfiguredState = 'Configured'; Tier = 'Not a granted permission'
                 })
+                if ($client.Id) { $existingPermissions[$existingKey] = $true }
             }
         }
     }

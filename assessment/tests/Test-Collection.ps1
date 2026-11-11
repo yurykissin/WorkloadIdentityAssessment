@@ -125,6 +125,33 @@ try {
     Assert-AssessmentContexts
     Assert-Rejected { Assert-AssessmentContexts -RequireAzure } '*No Azure context*' 'Azure is required only for Azure collectors'
     $global:AssessmentTestState.Azure = $savedAzure
+    Import-CollectorFunctions '01-tenant-context.ps1' @('Invoke-WithRetry', 'Get-AdminConsentPolicy')
+    $global:AssessmentTestState.AdminConsentCalls = 0
+    $global:AssessmentTestState.AdminConsentHandler = {
+        [pscustomobject]@{ IsEnabled = $true; NotifyReviewers = $true; RemindersEnabled = $false; RequestDurationInDays = 30; Reviewers = @(@{ Query = '/users/reviewer' }) }
+    }
+    function script:Get-MgPolicyAdminConsentRequestPolicy {
+        [CmdletBinding()]param()
+        $global:AssessmentTestState.AdminConsentCalls++
+        & $global:AssessmentTestState.AdminConsentHandler
+    }
+    $consent = Get-AdminConsentPolicy
+    Assert-Collection ($consent.State -eq 'Available' -and $consent.IsEnabled -eq $true -and $consent.Reviewers.Count -eq 1) 'Successful consent policy reads retain enabled status and reviewer evidence'
+    $global:AssessmentTestState.AdminConsentHandler = {
+        [pscustomobject]@{ IsEnabled = $false; NotifyReviewers = $false; RemindersEnabled = $false; RequestDurationInDays = 0; Reviewers = @() }
+    }
+    $consent = Get-AdminConsentPolicy
+    Assert-Collection ($consent.State -eq 'Available' -and $consent.IsEnabled -eq $false) 'A genuinely disabled workflow remains collected false, not unavailable'
+    $global:AssessmentTestState.AdminConsentCalls = 0
+    $global:AssessmentTestState.AdminConsentHandler = { Write-Error 'Synthetic 403 Forbidden' }
+    $deniedConsent = & {
+        $ErrorActionPreference = 'Continue'
+        $warnings = @()
+        $policy = Get-AdminConsentPolicy -WarningVariable warnings
+        @{ Policy = $policy; Warnings = $warnings }
+    }
+    Assert-Collection ($deniedConsent.Policy.State -eq 'Unavailable' -and $null -eq $deniedConsent.Policy.IsEnabled -and $deniedConsent.Policy.Error -eq 'CouldNotFetch') 'SDK nonterminating 403 errors are caught and exported as unavailable, never disabled'
+    Assert-Collection ($global:AssessmentTestState.AdminConsentCalls -eq 1 -and $deniedConsent.Warnings.Count -eq 1 -and $deniedConsent.Policy.Message -like '*Synthetic 403 Forbidden*Global Reader*adminconsentrequestpolicy-get*') 'A denied policy is not retried and retains the error plus source-backed read-role guidance'
     $tokens = $null
     $errors = $null
     $tenantAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $scripts '01-tenant-context.ps1'), [ref]$tokens, [ref]$errors)
@@ -644,6 +671,10 @@ $null = @(Get-AssessmentDirectoryData applications owners)
     Assert-Collection (@($normalized.Rows | Where-Object { $_.PermissionValue -eq 'User.Read' -and $_.ConfiguredState -eq 'Granted but not configured' -and $_.ConsentPrincipalId -eq 'consent-user' }).Count -eq 1) 'Specific-user consent and granted-only permissions remain distinct'
     Assert-Collection (@($normalized.Rows | Where-Object { $_.PermissionValue -eq 'Mail.Read' -and $_.PermissionType -eq 'Delegated' -and $_.Tier -eq 'PRIVILEGED' -and $_.ReviewRequired -and $_.AdminConsentRequired -eq $false -and $_.RiskRuleId -eq 'MS.IR.SENSITIVE' }).Count -eq 1) 'Collection classifies dangerous delegated mail access even without admin consent'
     Assert-Collection (@($normalized.Rows | Where-Object { $_.AppObjectId -eq 'no-sp-app' -and $_.GrantState -eq 'Not granted' }).Count -eq 1) 'Configured application without a local SP is retained without null-key joins'
+    Assert-Collection (@($normalized.Rows | Where-Object {
+        $_.SpObjectId -eq 'client-sp' -and $_.ResourceAppId -eq '00000003-0000-0000-c000-000000000000' -and
+        $_.PermissionType -eq 'Application' -and $_.AppRoleId -eq 'role-one'
+    }).Count -eq 1) 'Configured permissions reuse the granted-permission index without duplicating existing grants'
     Import-CollectorFunctions '08-ca-for-workload-identities.ps1' @('Get-SPCoverage')
     $global:AssessmentTestState.ConsentPrincipals[1] | Add-Member -NotePropertyMembers @{ appOwnerOrganizationId = 'synthetic-tenant'; signInAudience = 'AzureADMyOrg' }
     $policy = [pscustomobject]@{ State = 'enabled'; IncludeServicePrincipals = 'ServicePrincipalsInMyTenant'; ExcludeServicePrincipals = 'client-sp'; SpFilterRule = $null; GrantControls = 'OR: block' }

@@ -311,7 +311,9 @@ function Invoke-PrereqCheck {
     Write-Host "    RoleManagement.Read.Directory     → Directory role assignments"
     Write-Host "    CrossTenantInformation.ReadBasic.All → Cross-tenant access policy defaults"
     Write-Host ""
-    Write-Host "  Admin consent is required for these scopes. The signed-in user also needs supported read roles (for example Security Reader) for role-protected reports/policies." -ForegroundColor Gray
+    Write-Host "  Admin consent is required for these scopes. The signed-in user also needs API-specific supported roles." -ForegroundColor Gray
+    Write-Host "  Admin consent policy read: Global Reader (read-only), Cloud Application Administrator, Application Administrator, or an appropriately permitted custom role. Security Reader is not listed for this API." -ForegroundColor Gray
+    Write-Host "  See https://learn.microsoft.com/graph/api/adminconsentrequestpolicy-get?view=graph-rest-1.0" -ForegroundColor Gray
     Write-Host "  Optional -IncludeOptionalWorkloadEvidence scopes: AgentIdentity.Read.All, AgentIdentityBlueprint.Read.All, IdentityRiskyServicePrincipal.Read.All." -ForegroundColor Gray
     Write-Host "  Premium/preview evidence depends on tenant licensing, API/cloud support and role access; unavailable evidence is not a compliant result." -ForegroundColor Gray
     Write-Host ""
